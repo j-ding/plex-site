@@ -8,6 +8,14 @@ const QUALITIES = [
   { id: '720', label: '720p · 4 Mbps', bitrate: 4000, res: '1280x720' },
   { id: '480', label: '480p · 1.5 Mbps', bitrate: 1500, res: '720x480' },
 ];
+const SUB_SIZES = [
+  [75, 'Small'],
+  [100, 'Normal'],
+  [125, 'Large'],
+  [150, 'Huge'],
+];
+const AUDIO = 2;
+const SUBTITLE = 3;
 
 let ctx = null;
 
@@ -22,14 +30,25 @@ export async function openPlayer(ratingKey, { fromStart = false } = {}) {
       <button class="icon-btn" data-close aria-label="Back">←</button>
       <div class="player-title"></div>
       <button class="btn small" data-next hidden>Next episode ›</button>
+      <button class="icon-btn" data-tracks aria-label="Audio and subtitles" title="Audio & subtitles" hidden>
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-4 4v-4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm0 2v10h2v1.17L7.17 16H20V6H4Zm2 3h5v2H6V9Zm7 0h5v2h-5V9Zm-7 3h9v2H6v-2Zm11 0h1v2h-1v-2Z"/></svg>
+      </button>
       <select class="quality" aria-label="Quality">${QUALITIES.map(q => `<option value="${q.id}">${q.label}</option>`).join('')}</select>
     </div>
+    <div class="tracks" role="dialog" aria-label="Audio and subtitles" hidden></div>
     <div class="player-status"></div>
     <div class="upnext" hidden></div>`;
   root.hidden = false;
   document.body.classList.add('player-open');
 
-  const c = (ctx = { ratingKey, root, video: $('video', root), quality: store.get('quality', 'original') });
+  const c = (ctx = {
+    ratingKey,
+    root,
+    video: $('video', root),
+    quality: store.get('quality', 'original'),
+    subSize: store.get('subtitleSize', 100),
+    loadId: 0,
+  });
   if (!QUALITIES.some(q => q.id === c.quality)) c.quality = 'original';
   $('.quality', root).value = c.quality;
   bindUi(c);
@@ -46,6 +65,9 @@ export async function openPlayer(ratingKey, { fromStart = false } = {}) {
       : [item.title, item.year || ''];
     $('.player-title', root).innerHTML = `<strong>${esc(main)}</strong><span>${esc(sub)}</span>`;
     document.title = main;
+    const streams = c.part.Stream || [];
+    $('[data-tracks]', root).hidden = !(streams.filter(s => s.streamType === AUDIO).length > 1 || streams.some(s => s.streamType === SUBTITLE));
+    renderTracks(c);
     load(c, fromStart ? 0 : (item.viewOffset || 0) / 1000);
     if (item.type === 'episode') findNext(c);
   } catch (err) {
@@ -59,6 +81,7 @@ export function closePlayer() {
   ctx = null;
   report(c, 'stopped');
   c.started = false;
+  c.loadId++;
   clearInterval(c.timer);
   clearInterval(c.countdown);
   clearTimeout(c.hideTimer);
@@ -73,17 +96,25 @@ export function closePlayer() {
 
 /* ---------- streaming ---------- */
 
-// Browsers can play H.264/AAC in MP4 natively — no server work needed.
-// Anything else goes through Plex's transcoder as HLS.
-function canDirectPlay(media) {
+const streamsOf = (c, type) => (c.part.Stream || []).filter(s => s.streamType === type);
+const selected = (c, type) => streamsOf(c, type).find(s => s.selected);
+
+// Browsers can play H.264/AAC in MP4 natively — no server work needed — but only
+// with the file's first audio track and no subtitles. Anything else goes through
+// Plex's transcoder as HLS.
+function canDirectPlay(c) {
+  const media = c.item.Media[0];
   if (!media || (media.Part?.length ?? 0) > 1) return false;
+  if (selected(c, SUBTITLE)) return false;
+  const audio = streamsOf(c, AUDIO);
+  if (audio.length > 1 && selected(c, AUDIO) && selected(c, AUDIO) !== audio[0]) return false;
   const container = (media.container || '').toLowerCase();
   const video = (media.videoCodec || '').toLowerCase();
-  const audio = (media.audioCodec || '').toLowerCase();
-  return ['mp4', 'm4v', 'mov'].includes(container) && video === 'h264' && ['aac', 'mp3'].includes(audio);
+  const audioCodec = (media.audioCodec || '').toLowerCase();
+  return ['mp4', 'm4v', 'mov'].includes(container) && video === 'h264' && ['aac', 'mp3'].includes(audioCodec);
 }
 
-function hlsUrl(c, quality) {
+function streamParams(c, quality) {
   const params = {
     path: c.item.key,
     mediaIndex: 0,
@@ -94,7 +125,10 @@ function hlsUrl(c, quality) {
     directStream: 1,
     directStreamAudio: 1,
     videoQuality: 100,
-    subtitleSize: 100,
+    // Subtitles are drawn into the video by the server, which handles every
+    // format (text and image-based PGS/VobSub alike).
+    subtitles: 'burn',
+    subtitleSize: c.subSize,
     audioBoost: 100,
     hasMDE: 1,
     session: c.session,
@@ -102,12 +136,14 @@ function hlsUrl(c, quality) {
     ...identity(),
   };
   if (quality.bitrate) Object.assign(params, { maxVideoBitrate: quality.bitrate, videoResolution: quality.res });
-  return state.server.url('/video/:/transcode/universal/start.m3u8', params);
+  return params;
 }
 
-function load(c, at = 0) {
+async function load(c, at = 0) {
+  const loadId = ++c.loadId;
   teardown(c);
   c.started = false;
+  c.startAt = at;
   const v = c.video;
   const server = state.server;
   const quality = QUALITIES.find(q => q.id === c.quality) || QUALITIES[0];
@@ -118,7 +154,7 @@ function load(c, at = 0) {
     v.play().catch(() => {});
   }, { once: true });
 
-  if (!quality.bitrate && !c.forceHls && canDirectPlay(c.item.Media[0])) {
+  if (!quality.bitrate && !c.forceHls && canDirectPlay(c)) {
     c.mode = 'direct';
     seekWhenReady();
     v.src = server.url(c.part.key);
@@ -126,7 +162,20 @@ function load(c, at = 0) {
   }
 
   c.session = uuid();
-  const src = hlsUrl(c, quality);
+  const params = streamParams(c, quality);
+  try {
+    // The server must be asked how it will play the file before a stream can start.
+    const decision = await server.get('/video/:/transcode/universal/decision', params);
+    if (loadId !== c.loadId) return;
+    if (decision.generalDecisionCode >= 2000) {
+      return setStatus(c, 'error', decision.generalDecisionText || "The server can't play this file.");
+    }
+  } catch (err) {
+    if (loadId === c.loadId) setStatus(c, 'error', `Couldn't start playback: ${err.message}`);
+    return;
+  }
+
+  const src = server.url('/video/:/transcode/universal/start.m3u8', params);
   if (window.Hls?.isSupported()) {
     c.mode = 'hls';
     let recovered = false;
@@ -171,6 +220,11 @@ function teardown(c) {
   c.video.load();
 }
 
+// Restart the stream at the current position (after a quality/track change).
+function reload(c) {
+  load(c, c.started ? c.video.currentTime : c.startAt || 0);
+}
+
 // Tells the server where we are, so "Continue Watching" and watched status stay in sync.
 function report(c, playState) {
   if (!c.started || !c.item) return;
@@ -182,6 +236,67 @@ function report(c, playState) {
     duration: c.item.duration,
     'X-Plex-Session-Identifier': c.session || '',
   }).catch(() => {});
+}
+
+/* ---------- audio & subtitle tracks ---------- */
+
+function trackLabel(s) {
+  const main = s.displayTitle || s.language || `Track ${s.index}`;
+  // Many files tag every track with the release name; that's noise, not a description.
+  const looksLikeFilename = (s.title?.match(/\./g) || []).length >= 3;
+  return { main, extra: s.title && !looksLikeFilename && !main.includes(s.title) ? s.title : '' };
+}
+
+function trackButton(kind, id, label, on, extra = '') {
+  return `
+    <button class="track ${on ? 'on' : ''}" data-kind="${kind}" data-id="${id}" aria-pressed="${on}">
+      <span class="check">${on ? '✓' : ''}</span>
+      <span>${esc(label)}${extra ? `<small>${esc(extra)}</small>` : ''}</span>
+    </button>`;
+}
+
+function renderTracks(c) {
+  const panel = $('.tracks', c.root);
+  if (!panel || !c.part) return;
+  const audio = streamsOf(c, AUDIO);
+  const subs = streamsOf(c, SUBTITLE);
+  const subOn = selected(c, SUBTITLE);
+  panel.innerHTML = `
+    <div class="tracks-col">
+      <h3>Audio</h3>
+      ${audio.map((s, i) => {
+        const { main, extra } = trackLabel(s);
+        return trackButton('audio', s.id, main, s.selected || (!selected(c, AUDIO) && i === 0), extra);
+      }).join('')}
+    </div>
+    <div class="tracks-col">
+      <h3>Subtitles</h3>
+      ${trackButton('sub', 0, 'Off', !subOn)}
+      ${subs.map(s => {
+        const { main, extra } = trackLabel(s);
+        return trackButton('sub', s.id, main, !!s.selected, extra);
+      }).join('')}
+      ${subs.length ? `
+        <h3>Subtitle size</h3>
+        <div class="sizes">${SUB_SIZES.map(([v, l]) => `<button class="chip ${v === c.subSize ? 'on' : ''}" data-size="${v}">${l}</button>`).join('')}</div>` : ''}
+    </div>`;
+}
+
+async function selectTrack(c, kind, id) {
+  const type = kind === 'audio' ? AUDIO : SUBTITLE;
+  const current = selected(c, type)?.id ?? 0;
+  if (current === id) return;
+  try {
+    await state.server.selectStreams(c.part.id, kind === 'audio' ? { audioStreamID: id } : { subtitleStreamID: id });
+  } catch (err) {
+    console.error(err);
+    return;
+  }
+  if (ctx !== c) return;
+  streamsOf(c, type).forEach(s => (s.selected = s.id === id));
+  c.forceHls = false;
+  renderTracks(c);
+  reload(c);
 }
 
 /* ---------- UI ---------- */
@@ -198,10 +313,18 @@ function setStatus(c, kind, message) {
 
 function bindUi(c) {
   const { root, video } = c;
+  const panel = $('.tracks', root);
   const poke = () => {
     root.classList.add('ui');
     clearTimeout(c.hideTimer);
-    c.hideTimer = setTimeout(() => root.classList.remove('ui'), 3000);
+    c.hideTimer = setTimeout(() => {
+      if (panel.hidden) root.classList.remove('ui');
+    }, 3000);
+  };
+  const togglePanel = open => {
+    panel.hidden = !(open ?? panel.hidden);
+    root.classList.toggle('panel-open', !panel.hidden);
+    poke();
   };
   root.addEventListener('mousemove', poke);
   root.addEventListener('touchstart', poke, { passive: true });
@@ -209,11 +332,33 @@ function bindUi(c) {
 
   $('.player-bar [data-close]', root).onclick = () => leave(c);
   $('[data-next]', root).onclick = () => c.next && goTo(c.next.ratingKey);
+  $('[data-tracks]', root).onclick = e => {
+    e.stopPropagation();
+    togglePanel();
+  };
   $('.quality', root).onchange = e => {
     c.quality = e.target.value;
     store.set('quality', c.quality);
-    if (c.item) load(c, c.started ? video.currentTime : c.item.viewOffset / 1000 || 0);
+    if (c.item) reload(c);
   };
+  panel.onclick = e => {
+    const track = e.target.closest('.track');
+    if (track) {
+      togglePanel(false);
+      selectTrack(c, track.dataset.kind, Number(track.dataset.id));
+    }
+    const size = e.target.closest('[data-size]');
+    if (size) {
+      c.subSize = Number(size.dataset.size);
+      store.set('subtitleSize', c.subSize);
+      renderTracks(c);
+      if (selected(c, SUBTITLE)) reload(c);
+    }
+  };
+  // Clicking anywhere outside the panel closes it.
+  root.addEventListener('click', e => {
+    if (!panel.hidden && !e.target.closest('.tracks, [data-tracks]')) togglePanel(false);
+  });
 
   video.addEventListener('playing', () => {
     c.started = true;
@@ -263,7 +408,8 @@ function bindUi(c) {
         document.fullscreenElement ? document.exitFullscreen() : root.requestFullscreen?.();
         break;
       case 'Escape':
-        if (!document.fullscreenElement) leave(c);
+        if (!panel.hidden) togglePanel(false);
+        else if (!document.fullscreenElement) leave(c);
         break;
       default:
         return;

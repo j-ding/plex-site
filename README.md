@@ -1,4 +1,4 @@
-# Marquee
+# DingFlix
 
 A Netflix-style front end for a Plex Media Server. It's a fully static site
 (plain HTML/CSS/JS, no build step), so it can be hosted for free on GitHub Pages.
@@ -18,6 +18,9 @@ touches it.
 - Player: resumes where you left off, syncs progress to Plex, quality picker,
   next-episode button with an autoplay countdown, and keyboard shortcuts
   (space/k = pause, ←/→ = 10s skip, f = fullscreen, Esc = back)
+- Audio & subtitle menu (the speech-bubble button): switch between any audio
+  track or subtitle track in the file, or turn subtitles off, and pick a subtitle
+  size. Choices are saved to Plex, so they stick for that title in every Plex app.
 
 ## Run it locally
 
@@ -31,15 +34,15 @@ Then open http://localhost:8000.
 
 ## Put it on GitHub Pages
 
-1. Create a new repository on GitHub (for example `marquee`).
+1. Create a new repository on GitHub (for example `dingflix`).
 2. Push this folder to it:
    ```sh
-   git remote add origin https://github.com/<you>/marquee.git
+   git remote add origin https://github.com/<you>/dingflix.git
    git push -u origin main
    ```
 3. On GitHub, go to **Settings → Pages**. Under **Build and deployment**, choose
    **Deploy from a branch**, then pick `main` and `/ (root)`.
-4. After a minute the site is live at `https://<you>.github.io/marquee/`.
+4. After a minute the site is live at `https://<you>.github.io/dingflix/`.
 
 To rename the app, edit `appName` in [js/config.js](js/config.js).
 
@@ -83,8 +86,12 @@ ever sent to plex.tv and their Plex server.
 
 ## Known limitations
 
-- Audio track and subtitle selection use the server's defaults. You can change
-  them per title in Plex's own app for now.
+- Subtitles are drawn into the picture by the server ("burned in"). That works
+  for every subtitle format, including image-based PGS/VobSub, but it means a
+  title with subtitles on is always transcoded, and switching tracks restarts the
+  stream for a second or two.
+- Switching to an audio track other than the file's first one also makes the
+  server convert the stream, even for files that would otherwise play directly.
 - Music and photo libraries are hidden; this site is for video.
 - In some browsers, the "local network" address of a server can be blocked when
   the site is opened from GitHub Pages. The remote address still works as long as

@@ -133,6 +133,12 @@ export class PlexServer {
     return data?.MediaContainer ?? {};
   }
 
+  // Persists the chosen audio/subtitle track for this file on the server
+  // (Plex's own apps work the same way). subtitleStreamID 0 turns subtitles off.
+  selectStreams(partId, ids) {
+    return this.send(`/library/parts/${partId}`, { ...ids, allParts: 1 }, 'PUT');
+  }
+
   send(path, params = {}, method = 'GET') {
     return request(this.url(path, { ...identity(), ...params }), { method });
   }
