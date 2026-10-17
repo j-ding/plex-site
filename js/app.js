@@ -83,7 +83,30 @@ async function reconnect() {
   const resource = servers.find(s => s.clientIdentifier === state.server.id);
   if (!resource) throw new Error('Server is no longer available to this account.');
   const uri = await connect(resource);
-  setServer({ uri, token: resource.accessToken, name: resource.name, id: resource.clientIdentifier });
+  setServer({ uri, token: resource.accessToken, name: resource.name, id: resource.clientIdentifier, owned: !!resource.owned });
+}
+
+// Ask Plex to look for new files, wait until it's done, then redraw the page.
+async function scanLibraries(button) {
+  if (button.classList.contains('spinning')) return;
+  button.classList.add('spinning');
+  try {
+    await state.server.scanAll();
+    await sleep(1000);
+    for (let i = 0; i < 300 && (await state.server.isScanning()); i++) await sleep(1000);
+    state.sections = null; // libraries may have been added or renamed
+    $('#topbar').dataset.key = '';
+    state.rendered = null;
+    if (!location.hash.startsWith('#/watch')) route();
+    views.toast('Libraries are up to date');
+  } catch (err) {
+    console.error(err);
+    views.toast(err.status === 401 || err.status === 403
+      ? 'Only the server owner can check for new files.'
+      : `Couldn't check for new files: ${err.message}`);
+  } finally {
+    button.classList.remove('spinning');
+  }
 }
 
 // Coming back from app.plex.tv's login page: trade the PIN for a token.
@@ -146,6 +169,9 @@ document.addEventListener('click', async e => {
       views.hideHeader();
       if (location.hash === '#/connect') route();
       else location.hash = '#/connect';
+      break;
+    case 'scan':
+      scanLibraries(action);
       break;
     case 'retry':
       retried = false;

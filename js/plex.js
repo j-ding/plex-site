@@ -101,11 +101,12 @@ export async function connect(resource) {
 /* ---------- Plex Media Server ---------- */
 
 export class PlexServer {
-  constructor({ uri, token, name, id }) {
+  constructor({ uri, token, name, id, owned }) {
     this.uri = uri.replace(/\/+$/, '');
     this.token = token;
     this.name = name;
     this.id = id;
+    this.owned = owned; // undefined when connected manually (unknown)
   }
 
   url(path, params = {}) {
@@ -146,6 +147,10 @@ export class PlexServer {
   info() { return this.get('/'); }
 
   async sections() { return (await this.get('/library/sections')).Directory ?? []; }
+
+  // Look for new/removed files in every library. Only the server owner may do this.
+  scanAll() { return this.send('/library/sections/all/refresh'); }
+  async isScanning() { return (await this.sections()).some(s => s.refreshing); }
 
   async items(sectionId, { sort, start = 0, size = 60 } = {}) {
     const mc = await this.get(`/library/sections/${sectionId}/all`, {

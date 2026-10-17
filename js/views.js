@@ -39,6 +39,10 @@ export async function renderHeader() {
     <a class="logo" href="#/">${esc(CONFIG.appName)}</a>
     <nav id="nav"><a href="#/">Home</a></nav>
     <div class="hdr-right">
+      ${state.server.owned === false ? '' : `
+        <button class="icon-btn hdr-btn" data-action="scan" title="Check for new files" aria-label="Check for new files">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 4a8 8 0 0 1 7.75 6h-2.08A6 6 0 1 0 18 14h2.07A8 8 0 1 1 12 4Zm6-2 4 5h-8l4-5Z" transform="rotate(0 12 12)"/></svg>
+        </button>`}
       <label class="search">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M10 2a8 8 0 0 1 6.32 12.9l5.39 5.4-1.42 1.4-5.39-5.38A8 8 0 1 1 10 2Zm0 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12Z"/></svg>
         <input id="search" type="search" placeholder="Search" autocomplete="off" aria-label="Search">
@@ -80,6 +84,16 @@ export async function renderHeader() {
 export function updateNav() {
   const path = (location.hash || '#/').split('?')[0];
   $$('#nav a').forEach(a => a.toggleAttribute('aria-current', a.getAttribute('href') === (path === '#' ? '#/' : path)));
+}
+
+export function toast(message) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.setAttribute('role', 'status');
+  el.textContent = message;
+  document.body.append(el);
+  setTimeout(() => el.classList.add('out'), 3500);
+  setTimeout(() => el.remove(), 4000);
 }
 
 export function hideHeader() {
@@ -472,7 +486,7 @@ async function pickServer(resource, button) {
   error.textContent = '';
   try {
     const uri = await connect(resource);
-    setServer({ uri, token: resource.accessToken, name: resource.name, id: resource.clientIdentifier });
+    setServer({ uri, token: resource.accessToken, name: resource.name, id: resource.clientIdentifier, owned: !!resource.owned });
     location.hash = '#/';
   } catch (err) {
     error.textContent = err.message;

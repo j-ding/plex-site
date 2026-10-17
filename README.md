@@ -15,6 +15,8 @@ touches it.
 - One page per library with suggestion rows and a sortable, infinite-scroll grid
 - Title pages with cast, genres, season picker, and episode list
 - Search across all libraries
+- Refresh button (next to search) that has Plex check for new files and shows
+  them right away. Only the server owner sees it.
 - Player: resumes where you left off, syncs progress to Plex, quality picker,
   next-episode button with an autoplay countdown, and keyboard shortcuts
   (space/k = pause, ←/→ = 10s skip, f = fullscreen, Esc = back)

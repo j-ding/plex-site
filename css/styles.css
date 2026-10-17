@@ -83,6 +83,33 @@ select {
 }
 .search:focus-within { border-color: rgba(255, 255, 255, .6); color: var(--text); }
 .search input { background: none; border: 0; outline: 0; width: 190px; color: var(--text); }
+.hdr-btn {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  color: #c4c4cf;
+}
+.hdr-btn:hover { color: var(--text); background: rgba(255, 255, 255, .1); }
+.hdr-btn.spinning { color: var(--accent); pointer-events: none; }
+.hdr-btn.spinning svg { animation: spin 1s linear infinite; }
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  z-index: 200;
+  transform: translateX(-50%);
+  padding: 10px 18px;
+  background: var(--bg-2);
+  border: 1px solid var(--bg-3);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .5);
+  font-size: 14px;
+  transition: opacity .4s;
+}
+.toast.out { opacity: 0; }
 .menu { position: relative; }
 .avatar {
   width: 34px;
