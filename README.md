@@ -15,6 +15,9 @@ touches it.
 - One page per library with suggestion rows and a sortable, infinite-scroll grid
 - Title pages with cast, genres, season picker, and episode list
 - Search across all libraries
+- **Manage** tab for the server owner: everyone with access, what they've
+  finished watching, who's watching right now, and buttons to remove someone's
+  access or delete a profile
 - "Who's watching?" profiles from Plex Home, so each person keeps their own
   progress, Continue Watching and watched status (see below)
 - Refresh button (next to search) that has Plex check for new files and shows
@@ -74,7 +77,8 @@ Plex tracks progress per Plex user. There are two ways to give everyone their ow
 
 - **Plex Home** (people in your household): at https://app.plex.tv go to
   **Settings → Plex Home** and add a user for each person, optionally with a
-  4-digit PIN. The site then asks "Who's watching?" after sign-in, and each
+  4-digit PIN, or use **+ Add profile** on the site's "Who's watching?" screen
+  (the owner must be signed in on that device). The site then asks "Who's watching?" after sign-in, and each
   device remembers its choice (change it under the account menu → Switch profile).
 - **Their own Plex account** (friends elsewhere): share your libraries with them
   under **Settings → Users & Sharing**. They sign in with their own account.

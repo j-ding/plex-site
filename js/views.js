@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { state, setServer, setProfile, getSections, viewerToken } from './state.js';
+import { state, setServer, setProfile, getSections, viewerToken, isAdmin } from './state.js';
 import { auth, connect, PlexServer } from './plex.js';
 import { esc, $, $$, store, duration, debounce } from './util.js';
 
@@ -82,6 +82,7 @@ export async function renderHeader() {
     const sections = await getSections();
     $('#nav').insertAdjacentHTML('beforeend', sections.map(s => `<a href="#/library/${esc(s.key)}">${esc(s.title)}</a>`).join(''));
   } catch {}
+  if (await isAdmin().catch(() => false)) $('#nav').insertAdjacentHTML('beforeend', `<a href="#/manage" class="nav-admin">Manage</a>`);
   updateNav();
 }
 
@@ -425,6 +426,110 @@ export async function search(seq, q) {
     : `<p class="muted">No results for “${esc(q)}”.</p>`;
 }
 
+/* ---------- owner: who has access ---------- */
+
+const when = seconds => new Date(seconds * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+const itemName = m => (m.type === 'episode' ? `${m.grandparentTitle} · S${m.parentIndex}:E${m.index} ${m.title}` : `${m.title}${m.year ? ` (${m.year})` : ''}`);
+
+export async function manage(seq) {
+  pageTitle('Manage');
+  app().innerHTML = loading();
+  if (!(await isAdmin())) throw new Error('Only the owner of this server can manage who has access.');
+  const s = state.server;
+  const [shares, people, sessions] = await Promise.all([
+    auth.sharedUsers(state.userToken, s.id),
+    auth.homeUsers(state.userToken).catch(() => []),
+    s.sessions().catch(() => []),
+  ]);
+  if (stale(seq)) return;
+
+  // One entry per person: shared friends/profiles, plus Home profiles that have no share yet.
+  const home = new Map(people.filter(p => !p.admin).map(p => [String(p.id), p]));
+  const members = shares.map(sh => ({ ...sh, profile: home.get(String(sh.userId)) }));
+  for (const [id, p] of home) {
+    if (!members.some(m => String(m.userId) === id)) members.push({ userId: id, username: p.title, libraries: [], accepted: true, profile: p });
+  }
+  members.forEach(m => (m.name = m.profile?.title || m.username || m.email || 'Unknown'));
+  members.sort((a, b) => a.name.localeCompare(b.name));
+
+  const nowPlaying = sessions.map(m => {
+    const pct = m.duration ? Math.round(((m.viewOffset || 0) / m.duration) * 100) : 0;
+    return `
+      <div class="np">
+        ${m.thumb || m.grandparentThumb ? `<img src="${esc(img(m.grandparentThumb || m.thumb, 120, 180))}" alt="">` : '<div></div>'}
+        <div>
+          <strong>${esc(m.User?.title || 'Someone')}</strong> is watching
+          <div>${esc(itemName(m))}</div>
+          <div class="progress static"><span style="width:${pct}%"></span></div>
+          <small class="muted">${esc(m.Player?.state || '')} · ${pct}% · ${esc(m.Player?.product || '')} on ${esc(m.Player?.title || m.Player?.device || 'a device')}</small>
+        </div>
+      </div>`;
+  }).join('');
+
+  if (!mount(seq, `
+    <div class="page-top pad manage">
+      <h1 class="page-title">Manage</h1>
+      <p class="muted">People with access to <strong>${esc(s.name || 'your server')}</strong>, what they've finished watching, and who's watching right now.</p>
+
+      <h2 class="group-title">Watching now</h2>
+      ${nowPlaying || '<p class="muted">Nobody is watching right now.</p>'}
+
+      <h2 class="group-title">People with access</h2>
+      ${members.length ? members.map((m, i) => `
+        <section class="member" data-i="${i}">
+          <div class="member-head">
+            <span class="member-pic">${m.profile?.thumb ? `<img src="${esc(m.profile.thumb)}" alt="">` : esc(m.name[0].toUpperCase())}</span>
+            <div class="member-info">
+              <strong>${esc(m.name)}</strong>
+              <small class="muted">
+                ${m.profile ? 'Home profile' : 'Friend'}${m.email ? ` · ${esc(m.email)}` : ''}
+                ${!m.accepted ? ' · <span class="pending">Invite pending</span>' : ''}
+                · ${m.libraries.length ? `Can see: ${esc(m.libraries.join(', '))}` : 'No library access'}
+              </small>
+            </div>
+            <div class="member-actions">
+              ${m.shareId ? `<button class="btn small danger" data-remove="${i}">Remove access</button>` : ''}
+              ${m.profile ? `<button class="btn small danger" data-delete="${i}">Delete profile</button>` : ''}
+            </div>
+          </div>
+          <div class="history" id="history-${i}">${loading()}</div>
+        </section>`).join('') : `<p class="muted">You haven't shared your library with anyone yet. Add profiles on the "Who's watching?" screen, or invite friends from Plex under Settings → Users & Sharing.</p>`}
+    </div>`)) return;
+
+  // Load everyone's watch history in parallel.
+  members.forEach(async (m, i) => {
+    const box = $(`#history-${i}`);
+    const items = await s.history(m.userId, 10).catch(() => null);
+    if (stale(seq) || !box) return;
+    box.innerHTML = !items ? '<p class="muted">Couldn\'t load watch history.</p>'
+      : !items.length ? '<p class="muted">Hasn\'t finished anything yet.</p>'
+      : `<ul>${items.map(h => `<li><span>${esc(itemName(h))}</span><small class="muted">${when(h.viewedAt)}</small></li>`).join('')}</ul>`;
+  });
+
+  app().querySelector('.manage').addEventListener('click', async e => {
+    const remove = e.target.closest('[data-remove]');
+    const del = e.target.closest('[data-delete]');
+    const button = remove || del;
+    if (!button) return;
+    const m = members[button.dataset.remove ?? button.dataset.delete];
+    const question = remove
+      ? `Remove ${m.name}'s access to your libraries? They won't be able to watch anything until you share with them again.`
+      : `Delete the profile "${m.name}"? Their watch history and progress will be lost.`;
+    if (!confirm(question)) return;
+    button.disabled = true;
+    try {
+      if (remove) await auth.removeShare(state.userToken, s.id, m.shareId);
+      else await auth.deleteProfile(state.userToken, m.userId);
+      toast(remove ? `${m.name} no longer has access.` : `Deleted ${m.name}.`);
+      state.rendered = null;
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    } catch (err) {
+      button.disabled = false;
+      toast(`Couldn't do that: ${err.message}`);
+    }
+  });
+}
+
 export function errorView(err) {
   pageTitle('Error');
   app().innerHTML = `
@@ -453,13 +558,8 @@ export async function connectView(seq, params) {
   pageTitle('Sign in');
   if (!state.userToken) return renderSignIn(seq);
 
-  // Accounts with Plex Home profiles choose who's watching before picking a server.
-  if (!state.profile) {
-    mount(seq, shell(loading()));
-    const people = await auth.homeUsers(state.userToken).catch(() => []);
-    if (stale(seq)) return;
-    if (people.length > 1) return void location.replace('#/profiles');
-  }
+  // Every device chooses (or creates) who's watching before picking a server.
+  if (!state.profile) return void location.replace('#/profiles');
 
   mount(seq, shell(`
     <h2>Choose a server</h2>
@@ -520,10 +620,62 @@ export async function profilesView(seq) {
     <button class="profile ${p.uuid === state.profile?.uuid ? 'current' : ''}" data-i="${i}">
       <span class="profile-pic">${p.thumb ? `<img src="${esc(p.thumb)}" alt="">` : esc((p.title || '?')[0].toUpperCase())}</span>
       <span class="profile-name">${esc(p.title)}${p.protected ? ' <span aria-label="PIN protected">🔒</span>' : ''}</span>
-    </button>`).join('');
+    </button>`).join('') + `
+    <button class="profile add" data-add>
+      <span class="profile-pic">+</span>
+      <span class="profile-name">Add profile</span>
+    </button>`;
   grid.addEventListener('click', e => {
     const b = e.target.closest('.profile');
-    if (b && !b.disabled) chooseProfile(people[b.dataset.i]);
+    if (!b || b.disabled) return;
+    if (b.hasAttribute('data-add')) addProfile();
+    else chooseProfile(people[b.dataset.i]);
+  });
+}
+
+// Creates a Plex Home profile, gives it the libraries, and switches into it.
+function addProfile() {
+  if ($('.pin-box')) return;
+  const tiles = $$('.profile');
+  const error = $('#connect-error');
+  error.textContent = '';
+  const form = document.createElement('form');
+  form.className = 'pin-box';
+  form.innerHTML = `
+    <p>Add a profile for someone who watches here.</p>
+    <input name="title" class="name-input" maxlength="30" autocomplete="off" placeholder="Name" required aria-label="Profile name">
+    <div class="actions">
+      <button class="btn accent">Create</button>
+      <button type="button" class="btn" data-cancel>Cancel</button>
+    </div>`;
+  $('.profiles').append(form);
+  const input = form.querySelector('input');
+  input.focus();
+  const submit = form.querySelector('button');
+  form.querySelector('[data-cancel]').addEventListener('click', () => form.remove());
+
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const name = input.value.trim();
+    if (!name) return;
+    tiles.forEach(b => (b.disabled = true));
+    submit.disabled = true;
+    submit.textContent = 'Creating…';
+    error.textContent = '';
+    try {
+      const person = await auth.createProfile(state.userToken, name);
+      await auth.shareLibraries(state.userToken, person.id);
+      const token = await auth.switchUser(state.userToken, person.uuid);
+      setProfile({ uuid: person.uuid, title: person.title, thumb: person.thumb, token, admin: false });
+      location.hash = '#/connect';
+    } catch (err) {
+      error.textContent = err.status === 401 || err.status === 403
+        ? 'Only the main account can add profiles. Ask the server owner to sign in on this device.'
+        : `Couldn't add the profile: ${err.message}`;
+      tiles.forEach(b => (b.disabled = false));
+      submit.disabled = false;
+      submit.textContent = 'Create';
+    }
   });
 }
 
@@ -536,7 +688,7 @@ async function chooseProfile(person) {
     const pin = person.protected ? await askPin(person) : undefined;
     if (pin === null) return;
     const token = await auth.switchUser(state.userToken, person.uuid, pin);
-    setProfile({ uuid: person.uuid, title: person.title, thumb: person.thumb, token });
+    setProfile({ uuid: person.uuid, title: person.title, thumb: person.thumb, token, admin: !!person.admin });
     location.hash = '#/connect';
   } catch (err) {
     error.textContent = err.status === 401 || err.status === 403 ? 'Wrong PIN. Try again.' : `Couldn't switch profile: ${err.message}`;

@@ -35,21 +35,30 @@ export function identity() {
 
 // plex.tv accepts X-Plex-* headers cross-origin. For the media server we pass
 // everything as query params instead so requests stay CORS-simple (no preflight).
-async function request(url, { method = 'GET', token, plexHeaders = false, timeout = 20000 } = {}) {
+async function request(url, { method = 'GET', token, plexHeaders = false, timeout = 20000, json, raw = false } = {}) {
   const headers = { Accept: 'application/json' };
   if (plexHeaders) Object.assign(headers, identity());
   if (token) headers['X-Plex-Token'] = token;
-  const res = await fetch(url, { method, headers, signal: AbortSignal.timeout(timeout) });
+  const init = { method, headers, signal: AbortSignal.timeout(timeout) };
+  if (json !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(json);
+  }
+  const res = await fetch(url, init);
   if (!res.ok) {
     throw Object.assign(new Error(`Plex responded ${res.status} ${res.statusText}`.trim()), { status: res.status });
   }
   const text = await res.text();
+  if (raw) return text;
   try {
     return text ? JSON.parse(text) : null;
   } catch {
     return null;
   }
 }
+
+// Some older plex.tv endpoints only answer in XML.
+const parseXml = text => new DOMParser().parseFromString(text, 'application/xml');
 
 /* ---------- plex.tv account ---------- */
 
@@ -89,6 +98,56 @@ export const auth = {
     const r = await request(`${PLEX_TV}/api/v2/home/users/${uuid}/switch${q}`, { method: 'POST', token, plexHeaders: true });
     if (!r?.authToken) throw new Error('Plex did not return a token for that profile.');
     return r.authToken;
+  },
+
+  // Adds a managed Plex Home user (no email or password needed).
+  async createProfile(token, title) {
+    const text = await request(`${PLEX_TV}/api/home/users?title=${encodeURIComponent(title)}`, { method: 'POST', token, plexHeaders: true, raw: true });
+    const user = parseXml(text).querySelector('user');
+    if (!user?.getAttribute('uuid')) throw new Error('Plex did not create the profile.');
+    return { id: user.getAttribute('id'), uuid: user.getAttribute('uuid'), title: user.getAttribute('title'), thumb: user.getAttribute('thumb') };
+  },
+
+  // Everyone this account has shared a server with (friends and Home profiles).
+  async sharedUsers(token, serverId) {
+    const text = await request(`${PLEX_TV}/api/servers/${serverId}/shared_servers`, { token, plexHeaders: true, raw: true });
+    return [...parseXml(text).querySelectorAll('SharedServer')].map(s => ({
+      shareId: s.getAttribute('id'),
+      userId: s.getAttribute('userID'),
+      username: s.getAttribute('username') || '',
+      email: s.getAttribute('email') || '',
+      accepted: s.getAttribute('accepted') !== '0',
+      invitedAt: Number(s.getAttribute('invitedAt')) || 0,
+      libraries: [...s.querySelectorAll('Section')].filter(x => x.getAttribute('shared') === '1').map(x => x.getAttribute('title')),
+    }));
+  },
+
+  // Takes away someone's access to the server's libraries (they stay a Plex friend).
+  removeShare(token, serverId, shareId) {
+    return request(`${PLEX_TV}/api/servers/${serverId}/shared_servers/${shareId}`, { method: 'DELETE', token, plexHeaders: true, raw: true });
+  },
+
+  // Deletes a managed Plex Home profile entirely.
+  deleteProfile(token, userId) {
+    return request(`${PLEX_TV}/api/home/users/${userId}`, { method: 'DELETE', token, plexHeaders: true, raw: true });
+  },
+
+  // Gives a profile access to every library on each server this account owns.
+  async shareLibraries(token, userId) {
+    const owned = (await this.servers(token)).filter(s => s.owned);
+    for (const server of owned) {
+      const id = server.clientIdentifier;
+      const text = await request(`${PLEX_TV}/api/servers/${id}`, { token, plexHeaders: true, raw: true });
+      const sectionIds = [...parseXml(text).querySelectorAll('Section')].map(s => Number(s.getAttribute('id')));
+      if (!sectionIds.length) continue;
+      await request(`${PLEX_TV}/api/servers/${id}/shared_servers`, {
+        method: 'POST',
+        token,
+        plexHeaders: true,
+        raw: true,
+        json: { server_id: id, shared_server: { library_section_ids: sectionIds, invited_id: Number(userId) } },
+      });
+    }
   },
 
   async servers(token) {
@@ -190,6 +249,17 @@ export class PlexServer {
 
   async children(id) { return (await this.get(`/library/metadata/${id}/children`)).Metadata ?? []; }
   async allLeaves(id) { return (await this.get(`/library/metadata/${id}/allLeaves`)).Metadata ?? []; }
+
+  // Owner-only: what's playing right now, and who finished what.
+  async sessions() { return (await this.get('/status/sessions')).Metadata ?? []; }
+  async history(accountID, size = 20) {
+    return (await this.get('/status/sessions/history/all', {
+      accountID,
+      sort: 'viewedAt:desc',
+      'X-Plex-Container-Start': 0,
+      'X-Plex-Container-Size': size,
+    })).Metadata ?? [];
+  }
 
   scrobble(key) { return this.send('/:/scrobble', { identifier: 'com.plexapp.plugins.library', key }); }
   unscrobble(key) { return this.send('/:/unscrobble', { identifier: 'com.plexapp.plugins.library', key }); }

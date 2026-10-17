@@ -1,4 +1,4 @@
-import { state, setServer, setUserToken, signOut, viewerToken } from './state.js';
+import { state, setServer, setUserToken, setProfile, signOut, viewerToken } from './state.js';
 import { auth, connect } from './plex.js';
 import * as views from './views.js';
 import { openPlayer, closePlayer } from './player.js';
@@ -55,6 +55,7 @@ async function route() {
   if ((m = path.match(/^\/library\/(\w+)$/))) return run(() => views.library(seq, m[1]), seq);
   if ((m = path.match(/^\/title\/(\d+)$/))) return run(() => views.title(seq, m[1], params), seq);
   if (path === '/search') return run(() => views.search(seq, params.get('q') || ''), seq);
+  if (path === '/manage') return run(() => views.manage(seq), seq);
   location.replace('#/');
 }
 
@@ -66,7 +67,12 @@ async function run(render, seq) {
     console.error(err);
     if (seq !== state.seq) return;
     if (err.status === 401) {
-      // The server stopped accepting our token (e.g. share removed).
+      // The server stopped accepting our token: the profile was deleted or its access removed.
+      if (state.profile) {
+        setProfile(null);
+        views.toast('That profile no longer has access. Choose who\'s watching.');
+        return void location.replace('#/profiles');
+      }
       if (state.userToken) return void location.replace('#/connect?pick=1');
       signOut();
       return void location.replace('#/connect');
@@ -210,9 +216,8 @@ window.addEventListener('hashchange', route);
 history.replaceState({ root: true }, '');
 await finishLogin();
 
-// If Plex Home profiles were added since this device last chose, ask who's watching.
-if (state.userToken && !state.profile && state.server && !/^#\/(connect|profiles)/.test(location.hash)) {
-  const people = await auth.homeUsers(state.userToken).catch(() => []);
-  if (people.length > 1) history.replaceState(history.state, '', '#/profiles');
+// A device that hasn't picked a profile yet starts at "Who's watching?".
+if (state.userToken && !state.profile && !/^#\/(connect|profiles)/.test(location.hash)) {
+  history.replaceState(history.state, '', '#/profiles');
 }
 route();

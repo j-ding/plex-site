@@ -1,5 +1,5 @@
 import { store } from './util.js';
-import { PlexServer } from './plex.js';
+import { PlexServer, auth } from './plex.js';
 
 export const state = {
   seq: 0,          // bumps on every page render; async work checks it to avoid stale writes
@@ -8,6 +8,7 @@ export const state = {
   userToken: store.get('userToken'), // the Plex account that signed in
   profile: store.get('profile'),     // chosen Plex Home profile: { uuid, title, thumb, token }
   server: null,
+  admin: undefined, // cached result of isAdmin()
 };
 
 const saved = store.get('server');
@@ -22,7 +23,29 @@ export function setUserToken(token) {
   store.set('userToken', token);
 }
 
+// The owner of the server, watching as their own (not a managed) profile.
+export async function isAdmin() {
+  if (state.admin !== undefined) return state.admin;
+  if (!state.userToken || !state.server) return false; // manual connections can't manage sharing
+  let owned = state.server.owned;
+  if (owned === undefined) {
+    const resource = (await auth.servers(viewerToken())).find(s => s.clientIdentifier === state.server.id);
+    owned = !!resource?.owned;
+  }
+  let admin = owned;
+  if (admin && state.profile) {
+    if (state.profile.admin === undefined) {
+      const people = await auth.homeUsers(state.userToken);
+      state.profile.admin = !!people.find(p => p.uuid === state.profile.uuid)?.admin;
+      store.set('profile', state.profile);
+    }
+    admin = state.profile.admin;
+  }
+  return (state.admin = admin);
+}
+
 export function setProfile(profile) {
+  state.admin = undefined;
   state.profile = profile;
   store.set('profile', profile);
   // Server access tokens are per person, so reconnect as the new profile.
@@ -33,6 +56,7 @@ export function setProfile(profile) {
 }
 
 export function setServer(cfg) {
+  state.admin = undefined;
   state.server = new PlexServer(cfg);
   state.sections = null;
   state.rendered = null;
@@ -41,6 +65,7 @@ export function setServer(cfg) {
 }
 
 export function signOut() {
+  state.admin = undefined;
   state.userToken = null;
   state.profile = null;
   state.server = null;
