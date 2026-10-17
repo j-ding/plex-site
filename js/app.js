@@ -1,4 +1,4 @@
-import { state, setServer, setUserToken, signOut } from './state.js';
+import { state, setServer, setUserToken, signOut, viewerToken } from './state.js';
 import { auth, connect } from './plex.js';
 import * as views from './views.js';
 import { openPlayer, closePlayer } from './player.js';
@@ -21,6 +21,13 @@ async function route() {
     const seq = ++state.seq;
     return run(() => views.connectView(seq, params), seq);
   }
+  if (path === '/profiles') {
+    closePlayer();
+    if (!state.userToken) return void location.replace('#/connect');
+    state.rendered = raw;
+    const seq = ++state.seq;
+    return run(() => views.profilesView(seq), seq);
+  }
   if (!state.server) return void location.replace('#/connect');
   views.renderHeader().catch(() => {});
 
@@ -28,7 +35,7 @@ async function route() {
   // returns you exactly where you were.
   const watch = path.match(/^\/watch\/(\d+)$/);
   if (watch) {
-    if (!state.rendered || state.rendered.startsWith('/connect')) {
+    if (!state.rendered || state.rendered.startsWith('/connect') || state.rendered.startsWith('/profiles')) {
       state.rendered = '/';
       const seq = ++state.seq;
       run(() => views.home(seq), seq);
@@ -79,7 +86,7 @@ async function run(render, seq) {
 }
 
 async function reconnect() {
-  const servers = await auth.servers(state.userToken);
+  const servers = await auth.servers(viewerToken());
   const resource = servers.find(s => s.clientIdentifier === state.server.id);
   if (!resource) throw new Error('Server is no longer available to this account.');
   const uri = await connect(resource);
@@ -202,4 +209,10 @@ window.addEventListener('hashchange', route);
 // Mark the entry the user landed on, so the player knows whether "Back" would leave the site.
 history.replaceState({ root: true }, '');
 await finishLogin();
+
+// If Plex Home profiles were added since this device last chose, ask who's watching.
+if (state.userToken && !state.profile && state.server && !/^#\/(connect|profiles)/.test(location.hash)) {
+  const people = await auth.homeUsers(state.userToken).catch(() => []);
+  if (people.length > 1) history.replaceState(history.state, '', '#/profiles');
+}
 route();

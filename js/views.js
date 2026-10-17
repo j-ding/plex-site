@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { state, setServer, getSections } from './state.js';
+import { state, setServer, setProfile, getSections, viewerToken } from './state.js';
 import { auth, connect, PlexServer } from './plex.js';
 import { esc, $, $$, store, duration, debounce } from './util.js';
 
@@ -32,7 +32,7 @@ function pageTitle(t) {
 export async function renderHeader() {
   const bar = $('#topbar');
   bar.hidden = false;
-  const key = `${state.server.id}|${state.server.uri}`;
+  const key = `${state.server.id}|${state.server.uri}|${state.profile?.uuid ?? ''}`;
   if (bar.dataset.key === key) return updateNav();
   bar.dataset.key = key;
   bar.innerHTML = `
@@ -48,9 +48,13 @@ export async function renderHeader() {
         <input id="search" type="search" placeholder="Search" autocomplete="off" aria-label="Search">
       </label>
       <div class="menu">
-        <button class="avatar" id="menu-btn" aria-haspopup="true" aria-label="Account">${esc((state.server.name || 'P')[0].toUpperCase())}</button>
+        <button class="avatar" id="menu-btn" aria-haspopup="true" aria-label="Account">${esc((state.profile?.title || state.server.name || 'P')[0].toUpperCase())}</button>
         <div class="menu-pop" id="menu" hidden>
-          <div class="menu-label">Watching from <strong>${esc(state.server.name || 'Plex server')}</strong></div>
+          <div class="menu-label">
+            ${state.profile ? `Profile: <strong>${esc(state.profile.title)}</strong><br>` : ''}
+            Watching from <strong>${esc(state.server.name || 'Plex server')}</strong>
+          </div>
+          ${state.userToken ? `<a href="#/profiles">Switch profile</a>` : ''}
           ${state.userToken ? `<a href="#/connect?pick=1">Switch server</a>` : ''}
           <button data-action="signout">Sign out</button>
         </div>
@@ -65,14 +69,14 @@ export async function renderHeader() {
     else location.hash = target;
   }, 250));
 
-  if (state.userToken) {
-    auth.user(state.userToken).then(u => {
-      if (!u?.thumb) return;
-      const b = $('#menu-btn');
-      b.style.backgroundImage = `url(${JSON.stringify(u.thumb)})`;
-      b.textContent = '';
-    }).catch(() => {});
-  }
+  const setAvatar = thumb => {
+    if (!thumb) return;
+    const b = $('#menu-btn');
+    b.style.backgroundImage = `url(${JSON.stringify(thumb)})`;
+    b.textContent = '';
+  };
+  if (state.profile) setAvatar(state.profile.thumb);
+  else if (state.userToken) auth.user(state.userToken).then(u => setAvatar(u?.thumb)).catch(() => {});
 
   try {
     const sections = await getSections();
@@ -449,6 +453,14 @@ export async function connectView(seq, params) {
   pageTitle('Sign in');
   if (!state.userToken) return renderSignIn(seq);
 
+  // Accounts with Plex Home profiles choose who's watching before picking a server.
+  if (!state.profile) {
+    mount(seq, shell(loading()));
+    const people = await auth.homeUsers(state.userToken).catch(() => []);
+    if (stale(seq)) return;
+    if (people.length > 1) return void location.replace('#/profiles');
+  }
+
   mount(seq, shell(`
     <h2>Choose a server</h2>
     <div id="servers" class="server-list">${loading()}</div>
@@ -458,7 +470,7 @@ export async function connectView(seq, params) {
       <button class="link" data-action="signout">Sign out</button>
     </div>`));
 
-  const servers = await auth.servers(state.userToken);
+  const servers = await auth.servers(viewerToken());
   if (stale(seq)) return;
   const list = $('#servers');
   if (!servers.length) {
@@ -475,7 +487,88 @@ export async function connectView(seq, params) {
       <span class="server-go">›</span>
     </button>`).join('');
   $$('.server', list).forEach(b => b.addEventListener('click', () => pickServer(servers[b.dataset.i], b)));
-  if (servers.length === 1 && !params.has('pick')) pickServer(servers[0], $('.server', list));
+  if (!params.has('pick')) {
+    // Reconnect to the last-used server automatically (e.g. after switching profile).
+    const last = servers.findIndex(s => s.clientIdentifier === store.get('lastServerId'));
+    const auto = last >= 0 ? last : servers.length === 1 ? 0 : -1;
+    if (auto >= 0) pickServer(servers[auto], $$('.server', list)[auto]);
+  }
+}
+
+/* ---------- Plex Home profiles ---------- */
+
+export async function profilesView(seq) {
+  hideHeader();
+  pageTitle("Who's watching?");
+  if (!mount(seq, `
+    <div class="connect">
+      <div class="profiles">
+        <h1>Who's watching?</h1>
+        <div class="profile-grid" id="profiles">${loading()}</div>
+        <p id="connect-error" class="error" role="alert"></p>
+        <div class="connect-foot">
+          ${state.server ? `<a href="#/">← Back</a>` : '<span></span>'}
+          <button class="link" data-action="signout">Sign out</button>
+        </div>
+      </div>
+    </div>`)) return;
+
+  const people = await auth.homeUsers(state.userToken);
+  if (stale(seq)) return;
+  const grid = $('#profiles');
+  grid.innerHTML = people.map((p, i) => `
+    <button class="profile ${p.uuid === state.profile?.uuid ? 'current' : ''}" data-i="${i}">
+      <span class="profile-pic">${p.thumb ? `<img src="${esc(p.thumb)}" alt="">` : esc((p.title || '?')[0].toUpperCase())}</span>
+      <span class="profile-name">${esc(p.title)}${p.protected ? ' <span aria-label="PIN protected">🔒</span>' : ''}</span>
+    </button>`).join('');
+  grid.addEventListener('click', e => {
+    const b = e.target.closest('.profile');
+    if (b && !b.disabled) chooseProfile(people[b.dataset.i]);
+  });
+}
+
+async function chooseProfile(person) {
+  const buttons = $$('.profile');
+  const error = $('#connect-error');
+  error.textContent = '';
+  buttons.forEach(b => (b.disabled = true));
+  try {
+    const pin = person.protected ? await askPin(person) : undefined;
+    if (pin === null) return;
+    const token = await auth.switchUser(state.userToken, person.uuid, pin);
+    setProfile({ uuid: person.uuid, title: person.title, thumb: person.thumb, token });
+    location.hash = '#/connect';
+  } catch (err) {
+    error.textContent = err.status === 401 || err.status === 403 ? 'Wrong PIN. Try again.' : `Couldn't switch profile: ${err.message}`;
+  } finally {
+    buttons.forEach(b => (b.disabled = false));
+  }
+}
+
+// Resolves with the entered PIN, or null if cancelled.
+function askPin(person) {
+  return new Promise(resolve => {
+    const form = document.createElement('form');
+    form.className = 'pin-box';
+    form.innerHTML = `
+      <p>Enter the PIN for <strong>${esc(person.title)}</strong></p>
+      <input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" required aria-label="PIN">
+      <div class="actions">
+        <button class="btn accent">Continue</button>
+        <button type="button" class="btn" data-cancel>Cancel</button>
+      </div>`;
+    $('.profiles').append(form);
+    form.pin.focus();
+    const done = value => {
+      form.remove();
+      resolve(value);
+    };
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      done(form.pin.value);
+    });
+    form.querySelector('[data-cancel]').addEventListener('click', () => done(null));
+  });
 }
 
 async function pickServer(resource, button) {

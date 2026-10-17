@@ -77,6 +77,20 @@ export const auth = {
     return request(`${PLEX_TV}/api/v2/user`, { token, plexHeaders: true });
   },
 
+  // Plex Home: the people (profiles) under one account, each with their own watch history.
+  async homeUsers(token) {
+    const r = await request(`${PLEX_TV}/api/v2/home/users`, { token, plexHeaders: true });
+    return r?.users ?? [];
+  },
+
+  // Returns a token for that profile. Protected profiles need their PIN.
+  async switchUser(token, uuid, pin) {
+    const q = pin ? `?pin=${encodeURIComponent(pin)}` : '';
+    const r = await request(`${PLEX_TV}/api/v2/home/users/${uuid}/switch${q}`, { method: 'POST', token, plexHeaders: true });
+    if (!r?.authToken) throw new Error('Plex did not return a token for that profile.');
+    return r.authToken;
+  },
+
   async servers(token) {
     const list = await request(`${PLEX_TV}/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1`, { token, plexHeaders: true });
     return (list || []).filter(r => (r.provides || '').split(',').includes('server'));

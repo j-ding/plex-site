@@ -15,6 +15,8 @@ touches it.
 - One page per library with suggestion rows and a sortable, infinite-scroll grid
 - Title pages with cast, genres, season picker, and episode list
 - Search across all libraries
+- "Who's watching?" profiles from Plex Home, so each person keeps their own
+  progress, Continue Watching and watched status (see below)
 - Refresh button (next to search) that has Plex check for new files and shows
   them right away. Only the server owner sees it.
 - Player: resumes where you left off, syncs progress to Plex, quality picker,
@@ -65,6 +67,17 @@ To rename the app, edit `appName` in [js/config.js](js/config.js).
 5. To let friends and family in, open **Settings → Users & Sharing** in Plex and
    share your libraries with their Plex accounts. They then sign in to the site with
    their own account and pick your server.
+
+### Separate progress for each person
+
+Plex tracks progress per Plex user. There are two ways to give everyone their own:
+
+- **Plex Home** (people in your household): at https://app.plex.tv go to
+  **Settings → Plex Home** and add a user for each person, optionally with a
+  4-digit PIN. The site then asks "Who's watching?" after sign-in, and each
+  device remembers its choice (change it under the account menu → Switch profile).
+- **Their own Plex account** (friends elsewhere): share your libraries with them
+  under **Settings → Users & Sharing**. They sign in with their own account.
 
 ### Transcoding
 
