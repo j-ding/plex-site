@@ -167,9 +167,7 @@ async function load(c, at = 0) {
     // The server must be asked how it will play the file before a stream can start.
     const decision = await server.get('/video/:/transcode/universal/decision', params);
     if (loadId !== c.loadId) return;
-    if (decision.generalDecisionCode >= 2000) {
-      return setStatus(c, 'error', decision.generalDecisionText || "The server can't play this file.");
-    }
+    if (decision.generalDecisionCode >= 2000) return setStatus(c, 'error', unplayableReason(decision));
   } catch (err) {
     if (loadId === c.loadId) setStatus(c, 'error', `Couldn't start playback: ${err.message}`);
     return;
@@ -205,6 +203,16 @@ async function load(c, at = 0) {
   } else {
     setStatus(c, 'error', "This browser can't play streamed video.");
   }
+}
+
+// The server's specific reason is in transcodeDecisionText; the general text is vague.
+function unplayableReason(decision) {
+  const detail = decision.transcodeDecisionText || decision.generalDecisionText || '';
+  if (/DoVi \(Profile 5\)/i.test(detail)) {
+    return 'This file uses Dolby Vision Profile 5, which has no regular HDR/SDR picture for the server to convert. '
+      + 'Replace it with an HDR10 or SDR version of the movie. (With Plex Pass, the server\'s HDR tone mapping may be able to convert it.)';
+  }
+  return detail || "The server can't play this file.";
 }
 
 function teardown(c) {
