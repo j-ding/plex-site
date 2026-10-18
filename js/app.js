@@ -2,7 +2,7 @@ import { state, setServer, setUserToken, setProfile, signOut, viewerToken } from
 import { auth, connect } from './plex.js';
 import * as views from './views.js';
 import { openPlayer, closePlayer } from './player.js';
-import { $, sleep } from './util.js';
+import { $, sleep, store } from './util.js';
 
 function parseHash() {
   const raw = location.hash.replace(/^#/, '') || '/';
@@ -27,6 +27,12 @@ async function route() {
     state.rendered = raw;
     const seq = ++state.seq;
     return run(() => views.profilesView(seq), seq);
+  }
+  if (path === '/join') {
+    closePlayer();
+    state.rendered = raw;
+    const seq = ++state.seq;
+    return run(() => views.joinView(seq, params), seq);
   }
   if (!state.server) return void location.replace('#/connect');
   views.renderHeader().catch(() => {});
@@ -135,7 +141,8 @@ async function finishLogin() {
     const token = await auth.checkPin(pin).catch(() => null);
     if (token) {
       setUserToken(token);
-      if (!location.hash.startsWith('#/connect')) history.replaceState(history.state, '', '#/connect');
+      // Someone arriving from an invite link continues joining; everyone else picks a server.
+      history.replaceState(history.state, '', store.get('join') ? '#/join' : '#/connect');
       return;
     }
     await sleep(1000);
@@ -217,7 +224,7 @@ history.replaceState({ root: true }, '');
 await finishLogin();
 
 // A device that hasn't picked a profile yet starts at "Who's watching?".
-if (state.userToken && !state.profile && !/^#\/(connect|profiles)/.test(location.hash)) {
+if (state.userToken && !state.profile && !/^#\/(connect|profiles|join)/.test(location.hash)) {
   history.replaceState(history.state, '', '#/profiles');
 }
 route();

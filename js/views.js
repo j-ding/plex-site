@@ -436,10 +436,11 @@ export async function manage(seq) {
   app().innerHTML = loading();
   if (!(await isAdmin())) throw new Error('Only the owner of this server can manage who has access.');
   const s = state.server;
-  const [shares, people, sessions] = await Promise.all([
+  const [shares, people, sessions, pending] = await Promise.all([
     auth.sharedUsers(state.userToken, s.id),
     auth.homeUsers(state.userToken).catch(() => []),
     s.sessions().catch(() => []),
+    auth.sentInvites(state.userToken).catch(() => []),
   ]);
   if (stale(seq)) return;
 
@@ -471,6 +472,26 @@ export async function manage(seq) {
       <h1 class="page-title">Manage</h1>
       <p class="muted">People with access to <strong>${esc(s.name || 'your server')}</strong>, what they've finished watching, and who's watching right now.</p>
 
+      <h2 class="group-title">Invite someone</h2>
+      <form class="invite-form" id="invite-form">
+        <input name="recipient" type="text" autocomplete="off" placeholder="Their email (or Plex username)" required aria-label="Email or Plex username">
+        <button class="btn accent">Send invite</button>
+      </form>
+      <p class="muted invite-note">They don't need a Plex account yet. They'll get an email from Plex, and you'll get a link to send them. The link walks them through signing up and drops them right into your libraries.</p>
+      <div id="invite-result"></div>
+      ${pending.length ? `
+        <div class="pending-list">
+          <h3>Waiting to accept</h3>
+          ${pending.map((p, i) => `
+            <div class="pending-row">
+              <span>${esc(p.who)}${p.sentAt ? ` <small class="muted">· sent ${when(p.sentAt)}</small>` : ''}</span>
+              <span class="member-actions">
+                <button class="btn small" data-copy-link>Copy link</button>
+                <button class="btn small danger" data-cancel-invite="${i}">Cancel</button>
+              </span>
+            </div>`).join('')}
+        </div>` : ''}
+
       <h2 class="group-title">Watching now</h2>
       ${nowPlaying || '<p class="muted">Nobody is watching right now.</p>'}
 
@@ -493,8 +514,42 @@ export async function manage(seq) {
             </div>
           </div>
           <div class="history" id="history-${i}">${loading()}</div>
-        </section>`).join('') : `<p class="muted">You haven't shared your library with anyone yet. Add profiles on the "Who's watching?" screen, or invite friends from Plex under Settings → Users & Sharing.</p>`}
+        </section>`).join('') : `<p class="muted">You haven't shared your library with anyone yet. Invite someone above, or add profiles for your household on the "Who's watching?" screen.</p>`}
     </div>`)) return;
+
+  const link = inviteLink(s);
+  const copy = async text => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('Link copied. Send it to them however you like.');
+    } catch {
+      prompt('Copy this link:', text);
+    }
+  };
+
+  $('#invite-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const form = e.target;
+    const recipient = form.recipient.value.trim();
+    const button = form.querySelector('button');
+    const result = $('#invite-result');
+    button.disabled = true;
+    button.textContent = 'Sending…';
+    try {
+      await auth.shareServer(state.userToken, s.id, { invited_email: recipient });
+      result.innerHTML = `
+        <div class="invite-done">
+          <p><strong>Invite sent to ${esc(recipient)}.</strong> Send them this link:</p>
+          <div class="link-row"><input readonly value="${esc(link)}" aria-label="Invite link"><button class="btn small accent" data-copy-link>Copy</button></div>
+        </div>`;
+      form.reset();
+    } catch (err) {
+      result.innerHTML = `<p class="error">Couldn't send the invite: ${esc(err.message)}. Check the email address or username and try again.</p>`;
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Send invite';
+    }
+  });
 
   // Load everyone's watch history in parallel.
   members.forEach(async (m, i) => {
@@ -507,6 +562,23 @@ export async function manage(seq) {
   });
 
   app().querySelector('.manage').addEventListener('click', async e => {
+    if (e.target.closest('[data-copy-link]')) return void copy(link);
+    const cancel = e.target.closest('[data-cancel-invite]');
+    if (cancel) {
+      const invite = pending[cancel.dataset.cancelInvite];
+      if (!confirm(`Cancel the invite to ${invite.who}?`)) return;
+      cancel.disabled = true;
+      try {
+        await auth.cancelInvite(state.userToken, invite.id);
+        toast(`Cancelled the invite to ${invite.who}.`);
+        state.rendered = null;
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      } catch (err) {
+        cancel.disabled = false;
+        toast(`Couldn't cancel: ${err.message}`);
+      }
+      return;
+    }
     const remove = e.target.closest('[data-remove]');
     const del = e.target.closest('[data-delete]');
     const button = remove || del;
@@ -740,6 +812,125 @@ async function pickServer(resource, button) {
   }
 }
 
+// Sends the browser to Plex's sign-in page (which also offers free sign-up).
+async function startPlexSignIn(button, error) {
+  button.disabled = true;
+  error.textContent = '';
+  try {
+    const pin = await auth.createPin();
+    sessionStorage.setItem('marquee.pin', JSON.stringify({ id: pin.id, code: pin.code }));
+    location.href = auth.loginUrl(pin, location.href.split('#')[0]);
+  } catch (err) {
+    error.textContent = `Couldn't reach plex.tv: ${err.message}`;
+    button.disabled = false;
+  }
+}
+
+/* ---------- joining someone's server from an invite link ---------- */
+
+export function inviteLink(server) {
+  const base = location.href.split('#')[0];
+  return `${base}#/join?server=${encodeURIComponent(server.id)}&name=${encodeURIComponent(server.name || '')}`;
+}
+
+export async function joinView(seq, params) {
+  hideHeader();
+  // Remember the invite across the trip to Plex's sign-in page and back.
+  if (params.get('server')) store.set('join', { server: params.get('server'), name: params.get('name') || '' });
+  const join = store.get('join');
+  if (!join) return void location.replace('#/connect');
+  const name = join.name || 'a DingFlix server';
+  pageTitle(`Join ${name}`);
+
+  if (!state.userToken) {
+    if (!mount(seq, shell(`
+      <h2 class="join-title">You're invited to watch <span>${esc(name)}</span></h2>
+      <ol class="join-steps">
+        <li>Sign in with Plex. <strong>New to Plex?</strong> Choose <strong>Sign up</strong> on the next screen. It's free.</li>
+        <li>Use the <strong>same email address</strong> the invite was sent to.</li>
+        <li>You'll come straight back here and can start watching.</li>
+      </ol>
+      <button class="btn accent block" id="join-signin">Continue with Plex</button>
+      <p id="connect-error" class="error" role="alert"></p>`))) return;
+    $('#join-signin').addEventListener('click', e => startPlexSignIn(e.target, $('#connect-error')));
+    return;
+  }
+
+  mount(seq, shell(`
+    <h2 class="join-title">Joining <span>${esc(name)}</span></h2>
+    <div id="join-body"><div class="sub-busy"><div class="spinner"></div> Checking your invite…</div></div>
+    <p id="connect-error" class="error" role="alert"></p>
+    <div class="connect-foot"><span></span><button class="link" data-action="signout">Use a different account</button></div>`));
+  await completeJoin(seq, join);
+}
+
+async function completeJoin(seq, join) {
+  const body = $('#join-body');
+  const error = $('#connect-error');
+  const token = state.userToken;
+  const hasServer = async () => (await auth.servers(token)).find(s => s.clientIdentifier === join.server);
+
+  let resource = await hasServer();
+  if (!resource) {
+    const invites = await auth.receivedInvites(token);
+    if (stale(seq)) return;
+    // Accept on their behalf only when the invite is clearly for this server; otherwise ask.
+    const matching = invites.filter(i => i.serverIds.includes(join.server));
+    if (matching.length) {
+      for (const invite of matching) await auth.acceptInvite(token, invite.id);
+    } else if (invites.length) {
+      const picked = await new Promise(resolve => {
+        body.innerHTML = `
+          <p>Accept the invite to start watching:</p>
+          <div class="server-list">${invites.map((inv, i) => `
+            <button class="server" data-invite="${i}">
+              <span class="server-text"><strong>${esc(inv.serverNames.join(', ') || 'Plex libraries')}</strong><small>From ${esc(inv.from)}</small></span>
+              <span class="btn small accent">Accept</span>
+            </button>`).join('')}</div>`;
+        body.addEventListener('click', e => {
+          const b = e.target.closest('[data-invite]');
+          if (b) resolve(invites[b.dataset.invite]);
+        });
+      });
+      body.innerHTML = `<div class="sub-busy"><div class="spinner"></div> Accepting…</div>`;
+      await auth.acceptInvite(token, picked.id);
+    } else {
+      body.innerHTML = `
+        <p>We couldn't find an invite for this Plex account yet.</p>
+        <ul class="join-help">
+          <li>Make sure you signed in with the <strong>email address the invite was sent to</strong>.</li>
+          <li>If you just signed up, give it a minute and try again.</li>
+          <li>Still nothing? Ask for the invite to be sent again.</li>
+        </ul>
+        <button class="btn accent block" data-action="retry">Try again</button>`;
+      return;
+    }
+    // Shares can take a few seconds to show up after accepting.
+    for (let i = 0; i < 10 && !resource; i++) {
+      resource = await hasServer();
+      if (!resource) await new Promise(r => setTimeout(r, 2000));
+    }
+    if (stale(seq)) return;
+    if (!resource) {
+      error.textContent = 'The invite was accepted, but the server isn\'t available to this account yet. Try again in a minute.';
+      body.innerHTML = `<button class="btn accent block" data-action="retry">Try again</button>`;
+      return;
+    }
+  }
+
+  // All set: remember the server, pick their profile, and go.
+  store.set('lastServerId', resource.clientIdentifier);
+  store.del('join');
+  const people = await auth.homeUsers(token).catch(() => []);
+  if (people.length === 1 && !people[0].protected) {
+    const profileToken = await auth.switchUser(token, people[0].uuid);
+    setProfile({ uuid: people[0].uuid, title: people[0].title, thumb: people[0].thumb, token: profileToken, admin: !!people[0].admin });
+    location.replace('#/connect');
+  } else {
+    location.replace('#/profiles');
+  }
+}
+
 function renderSignIn(seq) {
   if (!mount(seq, shell(`
     <p class="muted">Sign in with your Plex account to watch from your server, or from one a friend has shared with you.</p>
@@ -756,18 +947,7 @@ function renderSignIn(seq) {
 
   const error = $('#connect-error');
 
-  $('#signin').addEventListener('click', async e => {
-    e.target.disabled = true;
-    error.textContent = '';
-    try {
-      const pin = await auth.createPin();
-      sessionStorage.setItem('marquee.pin', JSON.stringify({ id: pin.id, code: pin.code }));
-      location.href = auth.loginUrl(pin, location.href.split('#')[0]);
-    } catch (err) {
-      error.textContent = `Couldn't reach plex.tv: ${err.message}`;
-      e.target.disabled = false;
-    }
-  });
+  $('#signin').addEventListener('click', e => startPlexSignIn(e.target, error));
 
   $('#manual').addEventListener('submit', async e => {
     e.preventDefault();

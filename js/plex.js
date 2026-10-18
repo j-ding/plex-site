@@ -132,22 +132,66 @@ export const auth = {
     return request(`${PLEX_TV}/api/home/users/${userId}`, { method: 'DELETE', token, plexHeaders: true, raw: true });
   },
 
+  // plex.tv's IDs for every library on a server (sharing uses these, not the server's own keys).
+  async librarySectionIds(token, serverId) {
+    const text = await request(`${PLEX_TV}/api/servers/${serverId}`, { token, plexHeaders: true, raw: true });
+    return [...parseXml(text).querySelectorAll('Section')].map(s => Number(s.getAttribute('id')));
+  },
+
+  // Shares every library on a server with a user id, or with an email/username (which sends a Plex invite).
+  async shareServer(token, serverId, recipient, sectionIds) {
+    sectionIds ??= await this.librarySectionIds(token, serverId);
+    if (!sectionIds.length) throw new Error('This server has no libraries to share.');
+    await request(`${PLEX_TV}/api/servers/${serverId}/shared_servers`, {
+      method: 'POST',
+      token,
+      plexHeaders: true,
+      raw: true,
+      json: { server_id: serverId, shared_server: { library_section_ids: sectionIds, ...recipient } },
+    });
+  },
+
   // Gives a profile access to every library on each server this account owns.
   async shareLibraries(token, userId) {
     const owned = (await this.servers(token)).filter(s => s.owned);
     for (const server of owned) {
-      const id = server.clientIdentifier;
-      const text = await request(`${PLEX_TV}/api/servers/${id}`, { token, plexHeaders: true, raw: true });
-      const sectionIds = [...parseXml(text).querySelectorAll('Section')].map(s => Number(s.getAttribute('id')));
-      if (!sectionIds.length) continue;
-      await request(`${PLEX_TV}/api/servers/${id}/shared_servers`, {
-        method: 'POST',
-        token,
-        plexHeaders: true,
-        raw: true,
-        json: { server_id: id, shared_server: { library_section_ids: sectionIds, invited_id: Number(userId) } },
-      });
+      const sectionIds = await this.librarySectionIds(token, server.clientIdentifier);
+      if (sectionIds.length) await this.shareServer(token, server.clientIdentifier, { invited_id: Number(userId) }, sectionIds);
     }
+  },
+
+  // Owner side: invites sent that haven't been accepted yet.
+  async sentInvites(token) {
+    const text = await request(`${PLEX_TV}/api/invites/requested`, { token, plexHeaders: true, raw: true });
+    return [...parseXml(text).querySelectorAll('Invite')]
+      .filter(i => i.getAttribute('server') === '1')
+      .map(i => ({
+        id: i.getAttribute('id'),
+        who: i.getAttribute('email') || i.getAttribute('username') || i.getAttribute('friendlyName') || i.getAttribute('id'),
+        sentAt: Number(i.getAttribute('createdAt')) || 0,
+      }));
+  },
+
+  cancelInvite(token, id) {
+    return request(`${PLEX_TV}/api/invites/requested/${encodeURIComponent(id)}?friend=0&server=1&home=0`, { method: 'DELETE', token, plexHeaders: true, raw: true });
+  },
+
+  // Invitee side: server invites waiting for this account to accept.
+  async receivedInvites(token) {
+    const text = await request(`${PLEX_TV}/api/invites/requests`, { token, plexHeaders: true, raw: true });
+    return [...parseXml(text).querySelectorAll('Invite')]
+      .filter(i => i.getAttribute('server') === '1')
+      .map(i => ({
+        id: i.getAttribute('id'),
+        from: i.getAttribute('friendlyName') || i.getAttribute('username') || i.getAttribute('email') || 'Someone',
+        // Which servers the invite covers, when plex.tv says so.
+        serverIds: [...i.querySelectorAll('[machineIdentifier]')].map(s => s.getAttribute('machineIdentifier')),
+        serverNames: [...i.querySelectorAll('Server')].map(s => s.getAttribute('name')).filter(Boolean),
+      }));
+  },
+
+  acceptInvite(token, id) {
+    return request(`${PLEX_TV}/api/invites/requests/${encodeURIComponent(id)}?friend=0&server=1&home=0`, { method: 'PUT', token, plexHeaders: true, raw: true });
   },
 
   async servers(token) {

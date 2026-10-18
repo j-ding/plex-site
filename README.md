@@ -84,8 +84,10 @@ Plex tracks progress per Plex user. There are two ways to give everyone their ow
   4-digit PIN, or use **+ Add profile** on the site's "Who's watching?" screen
   (the owner must be signed in on that device). The site then asks "Who's watching?" after sign-in, and each
   device remembers its choice (change it under the account menu → Switch profile).
-- **Their own Plex account** (friends elsewhere): share your libraries with them
-  under **Settings → Users & Sharing**. They sign in with their own account.
+- **Their own Plex account** (friends elsewhere): in DingFlix go to **Manage →
+  Invite someone** and enter their email. Send them the link it gives you. The
+  link walks them through signing in (or signing up for a free Plex account with
+  that email), accepts your invite for them, and drops them into your libraries.
 
 ### Transcoding
 

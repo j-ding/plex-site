@@ -481,6 +481,34 @@ select {
 .history ul { list-style: none; margin: 0; padding: 0; font-size: 14px; }
 .history li { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; }
 
+/* ---------- invites ---------- */
+
+.invite-form { display: flex; gap: 8px; max-width: 560px; flex-wrap: wrap; }
+.invite-form input, .link-row input {
+  flex: 1;
+  min-width: 220px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--bg-3);
+  border-radius: 4px;
+}
+.invite-form input:focus { outline: none; border-color: var(--accent); }
+.invite-note { max-width: 640px; font-size: 14px; margin: 8px 0 0; }
+.invite-done { max-width: 640px; margin-top: 12px; padding: 14px; background: var(--bg-2); border: 1px solid rgba(61, 220, 132, .4); border-radius: 8px; }
+.invite-done p { margin: 0 0 8px; }
+.link-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.link-row input { color: var(--muted); font-size: 13px; }
+.pending-list { max-width: 640px; margin-top: 16px; }
+.pending-list h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 6px; }
+.pending-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--bg-3); }
+.join-title { text-align: center; font-weight: 600; }
+.join-title span { color: var(--accent); }
+.join-steps, .join-help { margin: 0 0 20px; padding-left: 20px; color: var(--muted); font-size: 14px; }
+.join-steps li, .join-help li { margin-bottom: 8px; }
+.join-steps strong, .join-help strong { color: var(--text); }
+#join-body p { margin: 0 0 12px; }
+#join-body .server .btn { pointer-events: none; }
+
 /* ---------- profiles ---------- */
 
 .profiles { width: 100%; max-width: 760px; text-align: center; }
