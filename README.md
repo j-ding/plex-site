@@ -28,6 +28,10 @@ touches it.
 - Audio & subtitle menu (the speech-bubble button): switch between any audio
   track or subtitle track in the file, or turn subtitles off, and pick a subtitle
   size. Choices are saved to Plex, so they stick for that title in every Plex app.
+- Find subtitles online (like VLC's VLSub): in that same menu, search
+  OpenSubtitles in any of 20 languages through your Plex server, with results
+  that match your exact file flagged. Picking one downloads it to the server and
+  switches to it on the spot. No OpenSubtitles account needed.
 
 ## Run it locally
 

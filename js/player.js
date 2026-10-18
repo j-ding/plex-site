@@ -16,6 +16,19 @@ const SUB_SIZES = [
 ];
 const AUDIO = 2;
 const SUBTITLE = 3;
+const SUB_LANGUAGES = [
+  ['en', 'English'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['it', 'Italian'],
+  ['pt', 'Portuguese'], ['nl', 'Dutch'], ['sv', 'Swedish'], ['pl', 'Polish'], ['ru', 'Russian'],
+  ['tr', 'Turkish'], ['ar', 'Arabic'], ['he', 'Hebrew'], ['hi', 'Hindi'], ['ja', 'Japanese'],
+  ['ko', 'Korean'], ['zh', 'Chinese'], ['vi', 'Vietnamese'], ['th', 'Thai'], ['id', 'Indonesian'],
+];
+
+function defaultSubLanguage() {
+  const saved = store.get('subLang');
+  if (saved) return saved;
+  const browser = (navigator.language || 'en').slice(0, 2).toLowerCase();
+  return SUB_LANGUAGES.some(([code]) => code === browser) ? browser : 'en';
+}
 
 let ctx = null;
 
@@ -65,8 +78,8 @@ export async function openPlayer(ratingKey, { fromStart = false } = {}) {
       : [item.title, item.year || ''];
     $('.player-title', root).innerHTML = `<strong>${esc(main)}</strong><span>${esc(sub)}</span>`;
     document.title = main;
-    const streams = c.part.Stream || [];
-    $('[data-tracks]', root).hidden = !(streams.filter(s => s.streamType === AUDIO).length > 1 || streams.some(s => s.streamType === SUBTITLE));
+    // Always available: even files without subtitles can find some online.
+    $('[data-tracks]', root).hidden = false;
     renderTracks(c);
     load(c, fromStart ? 0 : (item.viewOffset || 0) / 1000);
     if (item.type === 'episode') findNext(c);
@@ -85,6 +98,7 @@ export function closePlayer() {
   clearInterval(c.timer);
   clearInterval(c.countdown);
   clearTimeout(c.hideTimer);
+  clearTimeout(c.watchdog);
   document.removeEventListener('keydown', c.onKey);
   teardown(c);
   c.root.hidden = true;
@@ -148,6 +162,19 @@ async function load(c, at = 0) {
   const server = state.server;
   const quality = QUALITIES.find(q => q.id === c.quality) || QUALITIES[0];
   setStatus(c, 'loading');
+
+  // Safety net: if nothing has played after a while (e.g. the server is busy
+  // converting another video), retry once, then explain instead of spinning forever.
+  clearTimeout(c.watchdog);
+  c.watchdog = setTimeout(() => {
+    if (ctx !== c || loadId !== c.loadId || c.started) return;
+    if (!c.retried) {
+      c.retried = true;
+      load(c, at);
+    } else {
+      setStatus(c, 'error', 'The server is taking too long to start this video. It may be busy with another stream. Try again, or pick a lower quality.');
+    }
+  }, 25000);
 
   const seekWhenReady = () => v.addEventListener('loadedmetadata', () => {
     if (at > 0) v.currentTime = at;
@@ -284,16 +311,94 @@ function renderTracks(c) {
         const { main, extra } = trackLabel(s);
         return trackButton('sub', s.id, main, !!s.selected, extra);
       }).join('')}
+      ${c.subSearch ? '' : `<button class="find-subs" data-find>Find subtitles online…</button>`}
       ${subs.length ? `
         <h3>Subtitle size</h3>
         <div class="sizes">${SUB_SIZES.map(([v, l]) => `<button class="chip ${v === c.subSize ? 'on' : ''}" data-size="${v}">${l}</button>`).join('')}</div>` : ''}
+    </div>
+    ${c.subSearch ? renderSubSearch(c.subSearch) : ''}`;
+}
+
+/* ---------- online subtitles (OpenSubtitles, via the server) ---------- */
+
+function renderSubSearch(search) {
+  const { lang, busy, error, results, downloading } = search;
+  let body;
+  if (busy) body = `<div class="sub-busy"><div class="spinner"></div> Searching…</div>`;
+  else if (error) body = `<p class="error">${esc(error)}</p>`;
+  else if (!results.length) body = `<p class="muted">No subtitles found in this language.</p>`;
+  else {
+    body = `<div class="sub-results">${results.map((r, i) => `
+      <button class="sub-result" data-result="${i}" ${downloading != null ? 'disabled' : ''}>
+        <span class="sub-name">${esc(r.title || r.displayTitle || 'Subtitle')}</span>
+        <span class="sub-tags">
+          ${downloading === i ? '<span class="tag good">Downloading…</span>' : ''}
+          ${r.perfectMatch ? '<span class="tag good">Matches your file</span>' : ''}
+          ${r.hearingImpaired ? '<span class="tag">SDH</span>' : ''}
+          <span class="muted">${esc(r.providerTitle || '')}</span>
+        </span>
+      </button>`).join('')}</div>`;
+  }
+  return `
+    <div class="sub-search">
+      <div class="sub-search-head">
+        <h3>Find subtitles online</h3>
+        <select data-lang aria-label="Subtitle language">
+          ${SUB_LANGUAGES.map(([code, name]) => `<option value="${code}" ${code === lang ? 'selected' : ''}>${name}</option>`).join('')}
+        </select>
+      </div>
+      ${body}
     </div>`;
 }
 
-async function selectTrack(c, kind, id) {
+async function searchSubtitles(c, lang) {
+  store.set('subLang', lang);
+  c.subSearch = { lang, busy: true, results: [] };
+  renderTracks(c);
+  const search = c.subSearch;
+  try {
+    search.results = (await state.server.searchSubtitles(c.item.ratingKey, lang)).slice(0, 20);
+  } catch (err) {
+    search.error = `Search failed: ${err.message}`;
+  }
+  search.busy = false;
+  if (ctx === c && c.subSearch === search) renderTracks(c);
+}
+
+async function downloadSubtitle(c, index) {
+  const search = c.subSearch;
+  if (!search || search.downloading != null) return;
+  search.downloading = index;
+  search.error = null;
+  renderTracks(c);
+  const before = new Set(streamsOf(c, SUBTITLE).map(s => s.id));
+  try {
+    await state.server.downloadSubtitle(c.item.ratingKey, search.results[index], search.lang);
+    // The server fetches it in the background; wait for the new track to appear.
+    let added;
+    for (let tries = 0; tries < 15 && !added; tries++) {
+      const part = (await state.server.metadata(c.item.ratingKey)).Media?.[0]?.Part?.[0];
+      added = part?.Stream?.find(s => s.streamType === SUBTITLE && !before.has(s.id));
+      if (added) c.part.Stream = part.Stream;
+      else await new Promise(r => setTimeout(r, 1000));
+    }
+    if (ctx !== c) return;
+    if (!added) throw new Error('the server did not add it');
+    c.subSearch = null;
+    c.closePanel();
+    await selectTrack(c, 'sub', added.id, { force: true });
+  } catch (err) {
+    if (ctx !== c) return;
+    search.downloading = null;
+    search.error = `Couldn't download that subtitle: ${err.message}`;
+    renderTracks(c);
+  }
+}
+
+async function selectTrack(c, kind, id, { force = false } = {}) {
   const type = kind === 'audio' ? AUDIO : SUBTITLE;
   const current = selected(c, type)?.id ?? 0;
-  if (current === id) return;
+  if (current === id && !force) return;
   try {
     await state.server.selectStreams(c.part.id, kind === 'audio' ? { audioStreamID: id } : { subtitleStreamID: id });
   } catch (err) {
@@ -334,6 +439,7 @@ function bindUi(c) {
     root.classList.toggle('panel-open', !panel.hidden);
     poke();
   };
+  c.closePanel = () => togglePanel(false);
   root.addEventListener('mousemove', poke);
   root.addEventListener('touchstart', poke, { passive: true });
   poke();
@@ -349,7 +455,16 @@ function bindUi(c) {
     store.set('quality', c.quality);
     if (c.item) reload(c);
   };
+  panel.onchange = e => {
+    if (e.target.matches('[data-lang]')) searchSubtitles(c, e.target.value);
+  };
   panel.onclick = e => {
+    // Clicks here can re-render the panel (detaching e.target), so keep them from
+    // reaching the "click outside closes the panel" handler below.
+    e.stopPropagation();
+    if (e.target.closest('[data-find]')) return void searchSubtitles(c, defaultSubLanguage());
+    const result = e.target.closest('[data-result]');
+    if (result) return void downloadSubtitle(c, Number(result.dataset.result));
     const track = e.target.closest('.track');
     if (track) {
       togglePanel(false);
@@ -370,6 +485,7 @@ function bindUi(c) {
 
   video.addEventListener('playing', () => {
     c.started = true;
+    c.retried = false;
     setStatus(c, null);
     report(c, 'playing');
   });

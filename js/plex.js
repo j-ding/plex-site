@@ -250,6 +250,23 @@ export class PlexServer {
   async children(id) { return (await this.get(`/library/metadata/${id}/children`)).Metadata ?? []; }
   async allLeaves(id) { return (await this.get(`/library/metadata/${id}/allLeaves`)).Metadata ?? []; }
 
+  // Online subtitle search through the server's OpenSubtitles integration.
+  async searchSubtitles(ratingKey, language) {
+    return (await this.get(`/library/metadata/${ratingKey}/subtitles`, { language, hearingImpaired: 0, forced: 0 })).Stream ?? [];
+  }
+
+  // The server downloads the chosen result and adds it to the file as a subtitle track.
+  downloadSubtitle(ratingKey, result, language) {
+    return this.send(`/library/metadata/${ratingKey}/subtitles`, {
+      key: result.key,
+      codec: result.codec,
+      language,
+      hearingImpaired: result.hearingImpaired ? 1 : 0,
+      forced: result.forced ? 1 : 0,
+      providerTitle: result.providerTitle,
+    }, 'PUT');
+  }
+
   // Owner-only: what's playing right now, and who finished what.
   async sessions() { return (await this.get('/status/sessions')).Metadata ?? []; }
   async history(accountID, size = 20) {
