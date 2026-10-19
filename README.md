@@ -1,11 +1,12 @@
 # DingFlix
 
-A Netflix-style front end for a Plex Media Server. It's a fully static site
-(plain HTML/CSS/JS, no build step), so it can be hosted for free on GitHub Pages.
+A Netflix-style front end for a **Plex** or **Jellyfin** media server. It's a
+fully static site (plain HTML/CSS/JS, no build step), so it can be hosted for
+free on GitHub Pages.
 
-Everything happens in the viewer's browser: they sign in with their Plex
-account, the site finds the Plex servers that account can reach, and it streams
-directly from that server. GitHub only serves the files; your media never
+Everything happens in the viewer's browser: they sign in (with their Plex
+account, or with a Jellyfin username and password), and it streams directly from
+that server. GitHub only serves the files; your media never
 touches it.
 
 ## Features
@@ -96,22 +97,50 @@ directly with no server load. Everything else (MKV, HEVC, DTS, and so on) is
 converted on the fly by the server and streamed as HLS. Hardware-accelerated
 transcoding needs Plex Pass and makes a big difference on weaker machines.
 
+## Using Jellyfin instead of (or alongside) Plex
+
+On the sign-in screen choose **Use a Jellyfin server** and enter its address.
+Jellyfin's users show up as the "Who's watching?" profiles. Everything else (home
+rows, libraries, search, the player with quality, audio and subtitle choices,
+resume and progress, next episode, Manage) works the same.
+
+Differences from Plex:
+
+- **Hardware transcoding and HDR tone mapping are free** (Dashboard → Playback →
+  Transcoding). This setup uses the AMD GPU (AMF) with tone mapping on.
+- **Text subtitles** (SRT and similar) are drawn by the browser, so changing their
+  size is instant. Image subtitles (PGS) are burned in, like on Plex.
+- **Inviting** someone creates a Jellyfin account for them (Manage → Invite
+  someone) and gives you a sign-in link with their name filled in.
+- **Find subtitles online** needs Jellyfin's *Open Subtitles* plugin: Dashboard →
+  Plugins → Catalog → Open Subtitles, restart Jellyfin, then sign the plugin in to
+  a free OpenSubtitles.com account.
+- **The server needs an `https://` address** to be used from the GitHub Pages
+  site (browsers block `http://` from an HTTPS page, except `localhost`). A common
+  free setup: a DuckDNS name, port 443 forwarded on your router, and Caddy as a
+  reverse proxy to `localhost:8096` (it gets the certificate automatically).
+- The Jellyfin Windows service runs as `NETWORK SERVICE`, which can't see your
+  user folder by default. It was given read-only access to
+  `C:\Users\Ding\Videos\Plex` so it can read the same media as Plex.
+- Jellyfin only saves "continue watching" progress after the first 5% of a title.
+
 ## How it works
 
 | File | Purpose |
 | --- | --- |
 | `js/plex.js` | Plex API: PIN login via plex.tv, server discovery, library and playback endpoints |
+| `js/jellyfin.js` | Jellyfin API, translated into the same shape the pages use for Plex |
 | `js/views.js` | Pages: home, library, title, search, sign-in and server picker |
 | `js/player.js` | Video player: direct play or HLS (via hls.js), progress reporting, up-next |
 | `js/app.js` | Hash router, error handling and auto-reconnect, global click handling |
 | `js/state.js` | Current server and account, saved in localStorage |
 
-The Plex token is stored in the viewer's own browser (localStorage) and is only
-ever sent to plex.tv and their Plex server.
+Sign-in tokens are stored in the viewer's own browser (localStorage) and are
+only ever sent to plex.tv and the media server itself.
 
 ## Known limitations
 
-- Subtitles are drawn into the picture by the server ("burned in"). That works
+- On Plex, subtitles are drawn into the picture by the server ("burned in"). That works
   for every subtitle format, including image-based PGS/VobSub, but it means a
   title with subtitles on is always transcoded, and switching tracks restarts the
   stream for a second or two.
