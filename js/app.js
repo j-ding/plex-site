@@ -28,6 +28,12 @@ async function route() {
     const seq = ++state.seq;
     return run(() => views.profilesView(seq), seq);
   }
+  if (path === '/jellyfin') {
+    closePlayer();
+    state.rendered = raw;
+    const seq = ++state.seq;
+    return run(() => views.jellyfinView(seq, params), seq);
+  }
   if (path === '/join') {
     closePlayer();
     state.rendered = raw;
@@ -39,7 +45,8 @@ async function route() {
 
   // The player sits on top of whatever page is already rendered, so closing it
   // returns you exactly where you were.
-  const watch = path.match(/^\/watch\/(\d+)$/);
+  // Plex IDs are numbers; Jellyfin IDs are hex strings.
+  const watch = path.match(/^\/watch\/([\w-]+)$/);
   if (watch) {
     if (!state.rendered || state.rendered.startsWith('/connect') || state.rendered.startsWith('/profiles')) {
       state.rendered = '/';
@@ -59,7 +66,7 @@ async function route() {
   let m;
   if (path === '/') return run(() => views.home(seq), seq);
   if ((m = path.match(/^\/library\/(\w+)$/))) return run(() => views.library(seq, m[1]), seq);
-  if ((m = path.match(/^\/title\/(\d+)$/))) return run(() => views.title(seq, m[1], params), seq);
+  if ((m = path.match(/^\/title\/([\w-]+)$/))) return run(() => views.title(seq, m[1], params), seq);
   if (path === '/search') return run(() => views.search(seq, params.get('q') || ''), seq);
   if (path === '/manage') return run(() => views.manage(seq), seq);
   location.replace('#/');
@@ -74,6 +81,11 @@ async function run(render, seq) {
     if (seq !== state.seq) return;
     if (err.status === 401) {
       // The server stopped accepting our token: the profile was deleted or its access removed.
+      if (state.server?.kind === 'jellyfin') {
+        const uri = state.server.uri;
+        views.toast('Please sign in again.');
+        return void location.replace(`#/jellyfin?server=${encodeURIComponent(uri)}`);
+      }
       if (state.profile) {
         setProfile(null);
         views.toast('That profile no longer has access. Choose who\'s watching.');
@@ -85,7 +97,7 @@ async function run(render, seq) {
     }
     // Server addresses can change (new IP, server moved); look it up again once.
     const networkError = err instanceof TypeError || err.name === 'TimeoutError' || err.name === 'AbortError';
-    if (networkError && !retried && state.userToken && state.server?.id) {
+    if (networkError && !retried && state.userToken && state.server?.id && state.server.kind !== 'jellyfin') {
       retried = true;
       try {
         await reconnect();
@@ -224,7 +236,7 @@ history.replaceState({ root: true }, '');
 await finishLogin();
 
 // A device that hasn't picked a profile yet starts at "Who's watching?".
-if (state.userToken && !state.profile && !/^#\/(connect|profiles|join)/.test(location.hash)) {
+if (state.userToken && !state.profile && state.server?.kind !== 'jellyfin' && !/^#\/(connect|profiles|join|jellyfin)/.test(location.hash)) {
   history.replaceState(history.state, '', '#/profiles');
 }
 route();

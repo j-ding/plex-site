@@ -1,6 +1,7 @@
 import { CONFIG } from './config.js';
 import { state, setServer, setProfile, getSections, viewerToken, isAdmin } from './state.js';
 import { auth, connect, PlexServer } from './plex.js';
+import { jellyfinAuth } from './jellyfin.js';
 import { esc, $, $$, store, duration, debounce } from './util.js';
 
 const VIDEO_TYPES = new Set(['movie', 'show', 'season', 'episode']);
@@ -32,7 +33,9 @@ function pageTitle(t) {
 export async function renderHeader() {
   const bar = $('#topbar');
   bar.hidden = false;
-  const key = `${state.server.id}|${state.server.uri}|${state.profile?.uuid ?? ''}`;
+  const jellyfin = state.server.kind === 'jellyfin';
+  const who = jellyfin ? state.server.userName : state.profile?.title;
+  const key = `${state.server.id}|${state.server.uri}|${state.profile?.uuid ?? state.server.userId ?? ''}`;
   if (bar.dataset.key === key) return updateNav();
   bar.dataset.key = key;
   bar.innerHTML = `
@@ -48,14 +51,15 @@ export async function renderHeader() {
         <input id="search" type="search" placeholder="Search" autocomplete="off" aria-label="Search">
       </label>
       <div class="menu">
-        <button class="avatar" id="menu-btn" aria-haspopup="true" aria-label="Account">${esc((state.profile?.title || state.server.name || 'P')[0].toUpperCase())}</button>
+        <button class="avatar" id="menu-btn" aria-haspopup="true" aria-label="Account">${esc((who || state.server.name || 'P')[0].toUpperCase())}</button>
         <div class="menu-pop" id="menu" hidden>
           <div class="menu-label">
-            ${state.profile ? `Profile: <strong>${esc(state.profile.title)}</strong><br>` : ''}
-            Watching from <strong>${esc(state.server.name || 'Plex server')}</strong>
+            ${who ? `Profile: <strong>${esc(who)}</strong><br>` : ''}
+            Watching from <strong>${esc(state.server.name || 'your server')}</strong>
+            <small class="muted server-kind">${jellyfin ? 'Jellyfin' : 'Plex'}</small>
           </div>
-          ${state.userToken ? `<a href="#/profiles">Switch profile</a>` : ''}
-          ${state.userToken ? `<a href="#/connect?pick=1">Switch server</a>` : ''}
+          ${state.userToken || jellyfin ? `<a href="#/profiles">Switch profile</a>` : ''}
+          <a href="#/connect?pick=1">Switch server</a>
           <button data-action="signout">Sign out</button>
         </div>
       </div>
@@ -75,7 +79,8 @@ export async function renderHeader() {
     b.style.backgroundImage = `url(${JSON.stringify(thumb)})`;
     b.textContent = '';
   };
-  if (state.profile) setAvatar(state.profile.thumb);
+  if (jellyfin) setAvatar(state.server.userAvatar());
+  else if (state.profile) setAvatar(state.profile.thumb);
   else if (state.userToken) auth.user(state.userToken).then(u => setAvatar(u?.thumb)).catch(() => {});
 
   try {
@@ -435,6 +440,7 @@ export async function manage(seq) {
   pageTitle('Manage');
   app().innerHTML = loading();
   if (!(await isAdmin())) throw new Error('Only the owner of this server can manage who has access.');
+  if (state.server.kind === 'jellyfin') return jellyfinManage(seq);
   const s = state.server;
   const [shares, people, sessions, pending] = await Promise.all([
     auth.sharedUsers(state.userToken, s.id),
@@ -453,19 +459,7 @@ export async function manage(seq) {
   members.forEach(m => (m.name = m.profile?.title || m.username || m.email || 'Unknown'));
   members.sort((a, b) => a.name.localeCompare(b.name));
 
-  const nowPlaying = sessions.map(m => {
-    const pct = m.duration ? Math.round(((m.viewOffset || 0) / m.duration) * 100) : 0;
-    return `
-      <div class="np">
-        ${m.thumb || m.grandparentThumb ? `<img src="${esc(img(m.grandparentThumb || m.thumb, 120, 180))}" alt="">` : '<div></div>'}
-        <div>
-          <strong>${esc(m.User?.title || 'Someone')}</strong> is watching
-          <div>${esc(itemName(m))}</div>
-          <div class="progress static"><span style="width:${pct}%"></span></div>
-          <small class="muted">${esc(m.Player?.state || '')} · ${pct}% · ${esc(m.Player?.product || '')} on ${esc(m.Player?.title || m.Player?.device || 'a device')}</small>
-        </div>
-      </div>`;
-  }).join('');
+  const nowPlaying = nowPlayingHtml(sessions);
 
   if (!mount(seq, `
     <div class="page-top pad manage">
@@ -602,6 +596,149 @@ export async function manage(seq) {
   });
 }
 
+function nowPlayingHtml(sessions) {
+  return sessions.map(m => {
+    const pct = m.duration ? Math.round(((m.viewOffset || 0) / m.duration) * 100) : 0;
+    return `
+      <div class="np">
+        ${m.thumb || m.grandparentThumb ? `<img src="${esc(img(m.grandparentThumb || m.thumb, 120, 180))}" alt="">` : '<div></div>'}
+        <div>
+          <strong>${esc(m.User?.title || 'Someone')}</strong> is watching
+          <div>${esc(itemName(m))}</div>
+          <div class="progress static"><span style="width:${pct}%"></span></div>
+          <small class="muted">${esc(m.Player?.state || '')} · ${pct}% · ${esc(m.Player?.product || '')} on ${esc(m.Player?.title || m.Player?.device || 'a device')}</small>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function historyHtml(items) {
+  if (!items) return '<p class="muted">Couldn\'t load watch history.</p>';
+  if (!items.length) return '<p class="muted">Hasn\'t finished anything yet.</p>';
+  return `<ul>${items.map(h => `<li><span>${esc(itemName(h))}</span><small class="muted">${h.viewedAt ? when(h.viewedAt) : ''}</small></li>`).join('')}</ul>`;
+}
+
+// Jellyfin version of Manage: accounts live on the server, so "inviting" means
+// creating an account and sending its sign-in link.
+async function jellyfinManage(seq) {
+  const s = state.server;
+  const [users, sessions] = await Promise.all([s.users(), s.sessions().catch(() => [])]);
+  if (stale(seq)) return;
+  const others = users.filter(u => u.Id !== s.userId).sort((a, b) => a.Name.localeCompare(b.Name));
+  const avatar = u => (u.PrimaryImageTag ? `<img src="${esc(s.image(`/Users/${u.Id}/Images/Primary?tag=${u.PrimaryImageTag}`, 88))}" alt="">` : esc(u.Name[0].toUpperCase()));
+  const lastSeen = u => (u.LastActivityDate ? `last active ${when(Date.parse(u.LastActivityDate) / 1000)}` : 'never signed in');
+
+  if (!mount(seq, `
+    <div class="page-top pad manage">
+      <h1 class="page-title">Manage</h1>
+      <p class="muted">People with accounts on <strong>${esc(s.name || 'your server')}</strong> (Jellyfin), what they've finished watching, and who's watching right now.</p>
+
+      <h2 class="group-title">Invite someone</h2>
+      <form class="invite-form" id="invite-form">
+        <input name="who" type="text" autocomplete="off" maxlength="40" placeholder="Their name" required aria-label="Name">
+        <input name="pass" type="text" autocomplete="off" placeholder="Password (optional)" aria-label="Password">
+        <button class="btn accent">Create account</button>
+      </form>
+      <p class="muted invite-note">This creates a Jellyfin account for them with access to all your libraries. You'll get a link to send them. It opens the sign-in screen with their name already filled in.</p>
+      <div id="invite-result"></div>
+
+      <h2 class="group-title">Watching now</h2>
+      ${nowPlayingHtml(sessions) || '<p class="muted">Nobody is watching right now.</p>'}
+
+      <h2 class="group-title">People with access</h2>
+      ${others.length ? others.map((u, i) => `
+        <section class="member">
+          <div class="member-head">
+            <span class="member-pic">${avatar(u)}</span>
+            <div class="member-info">
+              <strong>${esc(u.Name)}</strong>
+              <small class="muted">
+                ${u.Policy?.IsAdministrator ? 'Administrator' : 'Account'} · ${lastSeen(u)}
+                ${u.Policy?.IsDisabled ? ' · <span class="pending">Access removed</span>' : ''}
+              </small>
+            </div>
+            <div class="member-actions">
+              <button class="btn small" data-copy="${i}">Copy sign-in link</button>
+              ${u.Policy?.IsDisabled
+                ? `<button class="btn small" data-enable="${i}">Restore access</button>`
+                : `<button class="btn small danger" data-disable="${i}">Remove access</button>`}
+              <button class="btn small danger" data-delete="${i}">Delete</button>
+            </div>
+          </div>
+          <div class="history" id="history-${i}">${loading()}</div>
+        </section>`).join('') : '<p class="muted">Nobody else has an account yet. Invite someone above.</p>'}
+    </div>`)) return;
+
+  others.forEach(async (u, i) => {
+    const items = await s.history(u.Id, 10).catch(() => null);
+    const box = $(`#history-${i}`);
+    if (!stale(seq) && box) box.innerHTML = historyHtml(items);
+  });
+
+  const copy = async text => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('Link copied. Send it to them however you like.');
+    } catch {
+      prompt('Copy this link:', text);
+    }
+  };
+  const refresh = () => {
+    state.rendered = null;
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  };
+
+  $('#invite-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const form = e.target;
+    const name = form.who.value.trim();
+    const pass = form.pass.value;
+    const button = form.querySelector('button');
+    button.disabled = true;
+    button.textContent = 'Creating…';
+    try {
+      await s.createUser(name, pass);
+      const link = jellyfinLink(s, name);
+      $('#invite-result').innerHTML = `
+        <div class="invite-done">
+          <p><strong>Account created for ${esc(name)}.</strong> Send them this link${pass ? ' and their password' : ''}:</p>
+          <div class="link-row"><input readonly value="${esc(link)}" aria-label="Sign-in link"><button class="btn small accent" data-copy-new>Copy</button></div>
+        </div>`;
+      $('[data-copy-new]').addEventListener('click', () => copy(link));
+      form.reset();
+    } catch (err) {
+      $('#invite-result').innerHTML = `<p class="error">Couldn't create the account: ${esc(err.message)}</p>`;
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Create account';
+    }
+  });
+
+  app().querySelector('.manage').addEventListener('click', async e => {
+    const b = e.target.closest('[data-copy],[data-disable],[data-enable],[data-delete]');
+    if (!b) return;
+    const u = others[b.dataset.copy ?? b.dataset.disable ?? b.dataset.enable ?? b.dataset.delete];
+    if (b.hasAttribute('data-copy')) return void copy(jellyfinLink(s, u.Name));
+    const action = b.hasAttribute('data-delete') ? 'delete' : b.hasAttribute('data-disable') ? 'disable' : 'enable';
+    const question = {
+      delete: `Delete ${u.Name}'s account? Their watch history and progress will be lost.`,
+      disable: `Remove ${u.Name}'s access? They'll be signed out and can't sign back in until you restore it.`,
+      enable: null,
+    }[action];
+    if (question && !confirm(question)) return;
+    b.disabled = true;
+    try {
+      if (action === 'delete') await s.deleteUser(u.Id);
+      else await s.updatePolicy(u.Id, { IsDisabled: action === 'disable' });
+      toast({ delete: `Deleted ${u.Name}.`, disable: `${u.Name} no longer has access.`, enable: `${u.Name} has access again.` }[action]);
+      refresh();
+    } catch (err) {
+      b.disabled = false;
+      toast(`Couldn't do that: ${err.message}`);
+    }
+  });
+}
+
 export function errorView(err) {
   pageTitle('Error');
   app().innerHTML = `
@@ -645,11 +782,17 @@ export async function connectView(seq, params) {
   const servers = await auth.servers(viewerToken());
   if (stale(seq)) return;
   const list = $('#servers');
+  const jellyfinButton = `
+    <a class="server" href="#/jellyfin">
+      <span class="status jf"></span>
+      <span class="server-text"><strong>Jellyfin server…</strong><small>Sign in to a Jellyfin server instead</small></span>
+      <span class="server-go">›</span>
+    </a>`;
   if (!servers.length) {
-    list.innerHTML = `<p class="muted">No Plex Media Server is linked to this account yet. Once you set one up — or a friend shares theirs with you — it'll appear here.</p>`;
+    list.innerHTML = `<p class="muted">No Plex Media Server is linked to this account yet. Once you set one up — or a friend shares theirs with you — it'll appear here.</p>${jellyfinButton}`;
     return;
   }
-  list.innerHTML = servers.map((r, i) => `
+  list.innerHTML = jellyfinButton + servers.map((r, i) => `
     <button class="server" data-i="${i}">
       <span class="status ${r.presence ? 'on' : ''}" title="${r.presence ? 'Online' : 'Offline'}"></span>
       <span class="server-text">
@@ -658,18 +801,20 @@ export async function connectView(seq, params) {
       </span>
       <span class="server-go">›</span>
     </button>`).join('');
-  $$('.server', list).forEach(b => b.addEventListener('click', () => pickServer(servers[b.dataset.i], b)));
+  $$('.server[data-i]', list).forEach(b => b.addEventListener('click', () => pickServer(servers[b.dataset.i], b)));
   if (!params.has('pick')) {
     // Reconnect to the last-used server automatically (e.g. after switching profile).
     const last = servers.findIndex(s => s.clientIdentifier === store.get('lastServerId'));
     const auto = last >= 0 ? last : servers.length === 1 ? 0 : -1;
-    if (auto >= 0) pickServer(servers[auto], $$('.server', list)[auto]);
+    if (auto >= 0) pickServer(servers[auto], $$('.server[data-i]', list)[auto]);
   }
 }
 
 /* ---------- Plex Home profiles ---------- */
 
 export async function profilesView(seq) {
+  // Jellyfin users are the profiles, and they live on the server itself.
+  if (state.server?.kind === 'jellyfin') return void location.replace(`#/jellyfin?server=${encodeURIComponent(state.server.uri)}`);
   hideHeader();
   pageTitle("Who's watching?");
   if (!mount(seq, `
@@ -931,10 +1076,182 @@ async function completeJoin(seq, join) {
   }
 }
 
+/* ---------- Jellyfin: server address, "Who's watching?", sign-in ---------- */
+
+export function jellyfinLink(server, userName) {
+  const base = location.href.split('#')[0];
+  return `${base}#/jellyfin?server=${encodeURIComponent(server.uri)}${userName ? `&user=${encodeURIComponent(userName)}&invited=1` : ''}`;
+}
+
+export async function jellyfinView(seq, params) {
+  hideHeader();
+  const raw = params.get('server');
+  if (!raw) return renderJellyfinAddress(seq);
+  const uri = jellyfinAuth.normalize(raw);
+  pageTitle('Jellyfin');
+
+  if (location.protocol === 'https:' && uri.startsWith('http:') && !/^http:\/\/(localhost|127\.0\.0\.1)/.test(uri)) {
+    return renderJellyfinAddress(seq, uri, "This site is served over HTTPS, so your browser won't connect to an http:// server. Give your Jellyfin server an https:// address (see the README) and use that.");
+  }
+
+  mount(seq, shell(loading()));
+  let info, people;
+  try {
+    [info, people] = await Promise.all([jellyfinAuth.info(uri), jellyfinAuth.publicUsers(uri).catch(() => [])]);
+  } catch {
+    if (!stale(seq)) renderJellyfinAddress(seq, uri, `Couldn't reach a Jellyfin server at ${uri}. Check the address and that the server is running.`);
+    return;
+  }
+  if (stale(seq)) return;
+  store.set('jfLastServer', uri);
+
+  const invited = params.has('invited');
+  const presetUser = params.get('user') || '';
+  // The admin of this server (signed in on this device) can add profiles here.
+  const canAdd = state.server?.kind === 'jellyfin' && state.server.uri === uri && state.server.admin;
+  const avatar = p => (p.PrimaryImageTag ? `<img src="${esc(`${uri}/Users/${p.Id}/Images/Primary?tag=${p.PrimaryImageTag}&maxWidth=280`)}" alt="">` : esc((p.Name || '?')[0].toUpperCase()));
+
+  if (!mount(seq, `
+    <div class="connect">
+      <div class="profiles">
+        ${invited ? `<p class="muted join-kicker">You're invited to watch <strong>${esc(info.ServerName)}</strong></p>` : ''}
+        <h1>Who's watching?</h1>
+        <p class="muted server-sub">${esc(info.ServerName)} · Jellyfin</p>
+        <div class="profile-grid" id="profiles">
+          ${people.map((p, i) => `
+            <button class="profile ${p.Id === state.server?.userId ? 'current' : ''}" data-i="${i}">
+              <span class="profile-pic">${avatar(p)}</span>
+              <span class="profile-name">${esc(p.Name)}${p.HasPassword ? ' <span aria-label="Password protected">🔒</span>' : ''}</span>
+            </button>`).join('')}
+          <button class="profile add" data-other>
+            <span class="profile-pic">?</span>
+            <span class="profile-name">Someone else</span>
+          </button>
+          ${canAdd ? `
+            <button class="profile add" data-add>
+              <span class="profile-pic">+</span>
+              <span class="profile-name">Add profile</span>
+            </button>` : ''}
+        </div>
+        <p id="connect-error" class="error" role="alert"></p>
+        <div class="connect-foot">
+          ${state.server ? `<a href="#/">← Back</a>` : `<a href="#/connect">← Other servers</a>`}
+          <a href="#/jellyfin">Change address</a>
+        </div>
+      </div>
+    </div>`)) return;
+
+  const signIn = (name, hasPassword) => jellyfinSignInForm({ uri, info, name, askName: !name, askPassword: hasPassword !== false });
+  $('#profiles').addEventListener('click', e => {
+    const b = e.target.closest('.profile');
+    if (!b || b.disabled || $('.pin-box')) return;
+    if (b.hasAttribute('data-add')) return void jellyfinAddProfile({ uri, info });
+    if (b.hasAttribute('data-other')) return void signIn('', true);
+    const p = people[b.dataset.i];
+    if (p.HasPassword) signIn(p.Name, true);
+    else jellyfinLogin({ uri, info, name: p.Name, password: '' });
+  });
+  if (presetUser) signIn(presetUser, true);
+}
+
+function renderJellyfinAddress(seq, value = store.get('jfLastServer') || '', message = '') {
+  if (!mount(seq, shell(`
+    <h2>Connect to Jellyfin</h2>
+    <p class="muted">Enter your Jellyfin server's address. Ask the server owner if you don't know it.</p>
+    <form id="jf-address" class="manual">
+      <label>Server address<input name="uri" type="text" inputmode="url" placeholder="https://jellyfin.example.com" value="${esc(value)}" required></label>
+      <button class="btn accent block">Next</button>
+    </form>
+    <p id="connect-error" class="error" role="alert">${esc(message)}</p>
+    <div class="connect-foot"><a href="#/connect">← Use Plex instead</a><span></span></div>`))) return;
+  $('#jf-address').addEventListener('submit', e => {
+    e.preventDefault();
+    const uri = jellyfinAuth.normalize(e.target.uri.value);
+    location.hash = `#/jellyfin?server=${encodeURIComponent(uri)}`;
+  });
+}
+
+function jellyfinSignInForm({ uri, info, name, askName, askPassword }) {
+  const form = document.createElement('form');
+  form.className = 'pin-box';
+  form.innerHTML = `
+    <p>${askName ? 'Sign in' : `Sign in as <strong>${esc(name)}</strong>`}</p>
+    ${askName ? `<input name="user" class="name-input" autocomplete="username" placeholder="Username" required aria-label="Username">` : ''}
+    ${askPassword ? `<input name="pass" class="name-input" type="password" autocomplete="current-password" placeholder="Password" aria-label="Password">` : ''}
+    <div class="actions">
+      <button class="btn accent">Sign in</button>
+      <button type="button" class="btn" data-cancel>Cancel</button>
+    </div>`;
+  $('.profiles').append(form);
+  form.querySelector('input')?.focus();
+  form.querySelector('[data-cancel]').addEventListener('click', () => form.remove());
+  form.addEventListener('submit', e => {
+    e.preventDefault();
+    const user = askName ? form.querySelector('[name=user]').value.trim() : name;
+    const pass = form.querySelector('[name=pass]')?.value || '';
+    jellyfinLogin({ uri, info, name: user, password: pass, form });
+  });
+}
+
+async function jellyfinLogin({ uri, info, name, password, form }) {
+  const error = $('#connect-error');
+  const button = form?.querySelector('button');
+  error.textContent = '';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Signing in…';
+  }
+  try {
+    const session = await jellyfinAuth.login(uri, name, password);
+    setServer(jellyfinAuth.serverConfig(uri, info, session));
+    location.hash = '#/';
+  } catch (err) {
+    error.textContent = err.status === 401 ? 'Wrong username or password.' : `Couldn't sign in: ${err.message}`;
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Sign in';
+    }
+  }
+}
+
+// Admin only: create a Jellyfin user for someone, then switch to them.
+function jellyfinAddProfile({ uri, info }) {
+  const form = document.createElement('form');
+  form.className = 'pin-box';
+  form.innerHTML = `
+    <p>Add a profile for someone who watches here.</p>
+    <input name="user" class="name-input" maxlength="40" autocomplete="off" placeholder="Name" required aria-label="Profile name">
+    <input name="pass" class="name-input" type="password" autocomplete="new-password" placeholder="Password (optional)" aria-label="Password">
+    <div class="actions">
+      <button class="btn accent">Create</button>
+      <button type="button" class="btn" data-cancel>Cancel</button>
+    </div>`;
+  $('.profiles').append(form);
+  form.querySelector('input').focus();
+  form.querySelector('[data-cancel]').addEventListener('click', () => form.remove());
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const name = form.querySelector('[name=user]').value.trim();
+    const pass = form.querySelector('[name=pass]').value;
+    const button = form.querySelector('button');
+    button.disabled = true;
+    button.textContent = 'Creating…';
+    try {
+      await state.server.createUser(name, pass);
+      await jellyfinLogin({ uri, info, name, password: pass });
+    } catch (err) {
+      $('#connect-error').textContent = `Couldn't add the profile: ${err.message}`;
+      button.disabled = false;
+      button.textContent = 'Create';
+    }
+  });
+}
+
 function renderSignIn(seq) {
   if (!mount(seq, shell(`
     <p class="muted">Sign in with your Plex account to watch from your server, or from one a friend has shared with you.</p>
     <button class="btn accent block" id="signin">Sign in with Plex</button>
+    <a class="btn block jf-btn" href="#/jellyfin">Use a Jellyfin server</a>
     <p id="connect-error" class="error" role="alert"></p>
     <details class="manual">
       <summary>Connect with a server URL and token</summary>

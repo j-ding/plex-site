@@ -1,5 +1,9 @@
 import { store } from './util.js';
 import { PlexServer, auth } from './plex.js';
+import { JellyfinServer } from './jellyfin.js';
+
+// Saved server configs carry a `kind`; older ones (from before Jellyfin support) are Plex.
+const makeServer = cfg => (cfg.kind === 'jellyfin' ? new JellyfinServer(cfg) : new PlexServer(cfg));
 
 export const state = {
   seq: 0,          // bumps on every page render; async work checks it to avoid stale writes
@@ -12,7 +16,7 @@ export const state = {
 };
 
 const saved = store.get('server');
-if (saved?.uri && saved?.token) state.server = new PlexServer(saved);
+if (saved?.uri && saved?.token) state.server = makeServer(saved);
 
 // The token that identifies who is watching. With Plex Home profiles each person
 // has their own, which is what keeps progress and watched status separate.
@@ -26,6 +30,7 @@ export function setUserToken(token) {
 // The owner of the server, watching as their own (not a managed) profile.
 export async function isAdmin() {
   if (state.admin !== undefined) return state.admin;
+  if (state.server?.kind === 'jellyfin') return (state.admin = state.server.admin);
   if (!state.userToken || !state.server) return false; // manual connections can't manage sharing
   let owned = state.server.owned;
   if (owned === undefined) {
@@ -57,7 +62,7 @@ export function setProfile(profile) {
 
 export function setServer(cfg) {
   state.admin = undefined;
-  state.server = new PlexServer(cfg);
+  state.server = makeServer(cfg);
   state.sections = null;
   state.rendered = null;
   store.set('server', cfg);

@@ -13,7 +13,7 @@ export function clientId() {
 }
 
 // Plex picks a transcoding profile from X-Plex-Platform, so report the real browser.
-function browser() {
+export function browser() {
   const ua = navigator.userAgent;
   if (/Edg\//.test(ua)) return 'Microsoft Edge';
   if (/Firefox\//.test(ua)) return 'Firefox';
@@ -217,13 +217,103 @@ export async function connect(resource) {
 
 /* ---------- Plex Media Server ---------- */
 
+const AUDIO = 2;
+const SUBTITLE = 3;
+const streamsOf = (part, type) => (part?.Stream || []).filter(s => s.streamType === type);
+
+// Browsers can play H.264/AAC in MP4 natively — no server work needed — but only
+// with the file's first audio track and no subtitles.
+function canDirectPlay(item) {
+  const media = item.Media?.[0];
+  const part = media?.Part?.[0];
+  if (!media || (media.Part?.length ?? 0) > 1) return false;
+  if (streamsOf(part, SUBTITLE).some(s => s.selected)) return false;
+  const audio = streamsOf(part, AUDIO);
+  const chosen = audio.find(s => s.selected);
+  if (audio.length > 1 && chosen && chosen !== audio[0]) return false;
+  const container = (media.container || '').toLowerCase();
+  const video = (media.videoCodec || '').toLowerCase();
+  const audioCodec = (media.audioCodec || '').toLowerCase();
+  return ['mp4', 'm4v', 'mov'].includes(container) && video === 'h264' && ['aac', 'mp3'].includes(audioCodec);
+}
+
+// The server's specific reason is in transcodeDecisionText; the general text is vague.
+function unplayableReason(decision) {
+  const detail = decision.transcodeDecisionText || decision.generalDecisionText || '';
+  if (/DoVi \(Profile 5\)/i.test(detail)) {
+    return 'This file uses Dolby Vision Profile 5, which has no regular HDR/SDR picture for the server to convert. '
+      + 'Replace it with an HDR10 or SDR version of the movie. (With Plex Pass, the server\'s HDR tone mapping may be able to convert it.)';
+  }
+  return detail || "The server can't play this file.";
+}
+
 export class PlexServer {
+  kind = 'plex';
+  supports = { subtitleSize: true };
+
   constructor({ uri, token, name, id, owned }) {
     this.uri = uri.replace(/\/+$/, '');
     this.token = token;
     this.name = name;
     this.id = id;
     this.owned = owned; // undefined when connected manually (unknown)
+  }
+
+  /* --- playback (the player only talks to these) --- */
+
+  // Decides how to play an item: straight from the file, or through the transcoder as HLS.
+  async playback(item, { quality, subSize, forceTranscode }) {
+    const part = item.Media?.[0]?.Part?.[0];
+    if (!quality.bitrate && !forceTranscode && canDirectPlay(item)) {
+      return { mode: 'direct', url: this.url(part.key) };
+    }
+    const session = uuid();
+    const params = {
+      path: item.key,
+      mediaIndex: 0,
+      partIndex: 0,
+      protocol: 'hls',
+      fastSeek: 1,
+      directPlay: 0,
+      directStream: 1,
+      directStreamAudio: 1,
+      videoQuality: 100,
+      // Subtitles are drawn into the video by the server, which handles every
+      // format (text and image-based PGS/VobSub alike).
+      subtitles: 'burn',
+      subtitleSize: subSize,
+      audioBoost: 100,
+      hasMDE: 1,
+      session,
+      'X-Plex-Session-Identifier': session,
+      ...identity(),
+    };
+    if (quality.bitrate) Object.assign(params, { maxVideoBitrate: quality.bitrate, videoResolution: quality.res });
+    // The server must be asked how it will play the file before a stream can start.
+    const decision = await this.get('/video/:/transcode/universal/decision', params);
+    if (decision.generalDecisionCode >= 2000) throw new Error(unplayableReason(decision));
+    return { mode: 'hls', url: this.url('/video/:/transcode/universal/start.m3u8', params), session };
+  }
+
+  stopPlayback(plan) {
+    if (plan?.session) this.stopTranscode(plan.session).catch(() => {});
+  }
+
+  // Tells the server where we are, so "Continue Watching" and watched status stay in sync.
+  reportPlayback(item, plan, playState, timeMs) {
+    return this.timeline({
+      ratingKey: item.ratingKey,
+      key: item.key,
+      state: playState,
+      time: Math.round(timeMs),
+      duration: item.duration,
+      'X-Plex-Session-Identifier': plan?.session || '',
+    });
+  }
+
+  // Segment and playlist URLs inside a stream come back without the token.
+  authorizeUrl(url) {
+    return url.includes('X-Plex-Token=') ? url : this.withToken(url);
   }
 
   url(path, params = {}) {

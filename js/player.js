@@ -1,6 +1,5 @@
 import { state } from './state.js';
-import { $, esc, store, uuid } from './util.js';
-import { identity } from './plex.js';
+import { $, esc, store } from './util.js';
 
 const QUALITIES = [
   { id: 'original', label: 'Original quality' },
@@ -64,6 +63,7 @@ export async function openPlayer(ratingKey, { fromStart = false } = {}) {
   });
   if (!QUALITIES.some(q => q.id === c.quality)) c.quality = 'original';
   $('.quality', root).value = c.quality;
+  applySubSize(c);
   bindUi(c);
   setStatus(c, 'loading');
 
@@ -113,46 +113,6 @@ export function closePlayer() {
 const streamsOf = (c, type) => (c.part.Stream || []).filter(s => s.streamType === type);
 const selected = (c, type) => streamsOf(c, type).find(s => s.selected);
 
-// Browsers can play H.264/AAC in MP4 natively — no server work needed — but only
-// with the file's first audio track and no subtitles. Anything else goes through
-// Plex's transcoder as HLS.
-function canDirectPlay(c) {
-  const media = c.item.Media[0];
-  if (!media || (media.Part?.length ?? 0) > 1) return false;
-  if (selected(c, SUBTITLE)) return false;
-  const audio = streamsOf(c, AUDIO);
-  if (audio.length > 1 && selected(c, AUDIO) && selected(c, AUDIO) !== audio[0]) return false;
-  const container = (media.container || '').toLowerCase();
-  const video = (media.videoCodec || '').toLowerCase();
-  const audioCodec = (media.audioCodec || '').toLowerCase();
-  return ['mp4', 'm4v', 'mov'].includes(container) && video === 'h264' && ['aac', 'mp3'].includes(audioCodec);
-}
-
-function streamParams(c, quality) {
-  const params = {
-    path: c.item.key,
-    mediaIndex: 0,
-    partIndex: 0,
-    protocol: 'hls',
-    fastSeek: 1,
-    directPlay: 0,
-    directStream: 1,
-    directStreamAudio: 1,
-    videoQuality: 100,
-    // Subtitles are drawn into the video by the server, which handles every
-    // format (text and image-based PGS/VobSub alike).
-    subtitles: 'burn',
-    subtitleSize: c.subSize,
-    audioBoost: 100,
-    hasMDE: 1,
-    session: c.session,
-    'X-Plex-Session-Identifier': c.session,
-    ...identity(),
-  };
-  if (quality.bitrate) Object.assign(params, { maxVideoBitrate: quality.bitrate, videoResolution: quality.res });
-  return params;
-}
-
 async function load(c, at = 0) {
   const loadId = ++c.loadId;
   teardown(c);
@@ -181,34 +141,38 @@ async function load(c, at = 0) {
     v.play().catch(() => {});
   }, { once: true });
 
-  if (!quality.bitrate && !c.forceHls && canDirectPlay(c)) {
+  // The server decides: play the file as-is, or stream a converted (HLS) version.
+  let plan;
+  try {
+    plan = await server.playback(c.item, { quality, subSize: c.subSize, forceTranscode: c.forceHls, startAt: at });
+  } catch (err) {
+    if (loadId === c.loadId) setStatus(c, 'error', err.message || "Couldn't start playback.");
+    return;
+  }
+  if (loadId !== c.loadId) return void server.stopPlayback(plan);
+  c.plan = plan;
+  // A subtitle file from another site only loads if the video is fetched with CORS.
+  if (plan.textTrack) v.crossOrigin = 'anonymous';
+  else v.removeAttribute('crossorigin');
+  attachTextTrack(c);
+
+  if (plan.mode === 'direct') {
     c.mode = 'direct';
     seekWhenReady();
-    v.src = server.url(c.part.key);
+    v.src = plan.url;
     return;
   }
 
-  c.session = uuid();
-  const params = streamParams(c, quality);
-  try {
-    // The server must be asked how it will play the file before a stream can start.
-    const decision = await server.get('/video/:/transcode/universal/decision', params);
-    if (loadId !== c.loadId) return;
-    if (decision.generalDecisionCode >= 2000) return setStatus(c, 'error', unplayableReason(decision));
-  } catch (err) {
-    if (loadId === c.loadId) setStatus(c, 'error', `Couldn't start playback: ${err.message}`);
-    return;
-  }
-
-  const src = server.url('/video/:/transcode/universal/start.m3u8', params);
+  const src = plan.url;
   if (window.Hls?.isSupported()) {
     c.mode = 'hls';
     let recovered = false;
     const hls = (c.hls = new Hls({
       startPosition: at > 0 ? at : -1,
-      // Segment/playlist URLs come back relative and without the token; add it.
+      // Segment/playlist URLs can come back without credentials; add them.
       xhrSetup: (xhr, url) => {
-        if (!url.includes('X-Plex-Token=')) xhr.open('GET', server.withToken(url), true);
+        const authorized = server.authorizeUrl(url);
+        if (authorized !== url) xhr.open('GET', authorized, true);
       },
     }));
     hls.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
@@ -232,14 +196,20 @@ async function load(c, at = 0) {
   }
 }
 
-// The server's specific reason is in transcodeDecisionText; the general text is vague.
-function unplayableReason(decision) {
-  const detail = decision.transcodeDecisionText || decision.generalDecisionText || '';
-  if (/DoVi \(Profile 5\)/i.test(detail)) {
-    return 'This file uses Dolby Vision Profile 5, which has no regular HDR/SDR picture for the server to convert. '
-      + 'Replace it with an HDR10 or SDR version of the movie. (With Plex Pass, the server\'s HDR tone mapping may be able to convert it.)';
-  }
-  return detail || "The server can't play this file.";
+// Subtitles the browser draws itself (Jellyfin text subtitles), so their size can change live.
+function attachTextTrack(c) {
+  c.video.querySelectorAll('track').forEach(t => t.remove());
+  const sub = c.plan?.textTrack;
+  if (!sub) return;
+  const track = document.createElement('track');
+  Object.assign(track, { kind: 'subtitles', label: sub.label || 'Subtitles', srclang: sub.language || '', src: sub.url, default: true });
+  c.video.append(track);
+  track.track.mode = 'showing';
+  track.addEventListener('load', () => (track.track.mode = 'showing'));
+}
+
+function applySubSize(c) {
+  c.root.style.setProperty('--sub-scale', String(c.subSize / 100));
 }
 
 function teardown(c) {
@@ -247,9 +217,9 @@ function teardown(c) {
     c.hls.destroy();
     c.hls = null;
   }
-  if ((c.mode === 'hls' || c.mode === 'native') && c.session) {
-    state.server.stopTranscode(c.session).catch(() => {});
-  }
+  c.video.querySelectorAll('track').forEach(t => t.remove());
+  if (c.plan && c.mode !== 'direct') state.server.stopPlayback(c.plan);
+  c.plan = null;
   c.mode = null;
   c.video.removeAttribute('src');
   c.video.load();
@@ -263,14 +233,7 @@ function reload(c) {
 // Tells the server where we are, so "Continue Watching" and watched status stay in sync.
 function report(c, playState) {
   if (!c.started || !c.item) return;
-  state.server.timeline({
-    ratingKey: c.item.ratingKey,
-    key: c.item.key,
-    state: playState,
-    time: Math.round(c.video.currentTime * 1000),
-    duration: c.item.duration,
-    'X-Plex-Session-Identifier': c.session || '',
-  }).catch(() => {});
+  Promise.resolve(state.server.reportPlayback(c.item, c.plan, playState, c.video.currentTime * 1000)).catch(() => {});
 }
 
 /* ---------- audio & subtitle tracks ---------- */
@@ -312,7 +275,7 @@ function renderTracks(c) {
         return trackButton('sub', s.id, main, !!s.selected, extra);
       }).join('')}
       ${c.subSearch ? '' : `<button class="find-subs" data-find>Find subtitles online…</button>`}
-      ${subs.length ? `
+      ${subs.length && state.server.supports?.subtitleSize ? `
         <h3>Subtitle size</h3>
         <div class="sizes">${SUB_SIZES.map(([v, l]) => `<button class="chip ${v === c.subSize ? 'on' : ''}" data-size="${v}">${l}</button>`).join('')}</div>` : ''}
     </div>
@@ -475,7 +438,9 @@ function bindUi(c) {
       c.subSize = Number(size.dataset.size);
       store.set('subtitleSize', c.subSize);
       renderTracks(c);
-      if (selected(c, SUBTITLE)) reload(c);
+      applySubSize(c);
+      // Burned-in subtitles need the stream restarted at the new size; browser-drawn ones don't.
+      if (selected(c, SUBTITLE) && !c.plan?.textTrack) reload(c);
     }
   };
   // Clicking anywhere outside the panel closes it.

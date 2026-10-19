@@ -509,6 +509,17 @@ select {
 #join-body p { margin: 0 0 12px; }
 #join-body .server .btn { pointer-events: none; }
 
+/* ---------- jellyfin ---------- */
+
+.jf-btn { margin-top: 10px; background: rgba(170, 92, 195, .22); color: #e2c2f0; }
+.jf-btn:hover { background: rgba(170, 92, 195, .38); }
+.status.jf { background: linear-gradient(135deg, #aa5cc3, #00a4dc); }
+a.server { color: inherit; }
+.server-sub { margin: -22px 0 28px; font-size: 14px; }
+.join-kicker { margin: 0 0 8px; }
+.server-kind { display: block; margin-top: 2px; font-size: 12px; }
+.profiles .pin-box .name-input + .name-input { margin-top: 8px; }
+
 /* ---------- profiles ---------- */
 
 .profiles { width: 100%; max-width: 760px; text-align: center; }
@@ -577,6 +588,12 @@ select {
 
 #player { position: fixed; inset: 0; z-index: 100; background: #000; }
 #player video { width: 100%; height: 100%; background: #000; display: block; }
+/* Browser-drawn subtitles (Jellyfin text subtitles); --sub-scale comes from the size buttons. */
+#player video::cue {
+  font-size: calc(var(--sub-scale, 1) * clamp(18px, 4.2vh, 46px));
+  color: #fff;
+  background: rgba(0, 0, 0, .55);
+}
 .player-bar {
   position: absolute;
   inset: 0 0 auto;
