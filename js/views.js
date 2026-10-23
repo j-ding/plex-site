@@ -1,7 +1,7 @@
 import { CONFIG } from './config.js';
 import { state, setServer, setProfile, getSections, viewerToken, isAdmin } from './state.js';
 import { auth, connect, PlexServer } from './plex.js';
-import { jellyfinAuth } from './jellyfin.js';
+import { jellyfinAuth, shareCode } from './jellyfin.js';
 import { esc, $, $$, store, duration, debounce } from './util.js';
 
 const VIDEO_TYPES = new Set(['movie', 'show', 'season', 'episode']);
@@ -38,6 +38,17 @@ export async function renderHeader() {
   const key = `${state.server.id}|${state.server.uri}|${state.profile?.uuid ?? state.server.userId ?? ''}`;
   if (bar.dataset.key === key) return updateNav();
   bar.dataset.key = key;
+
+  // Someone watching through a share link only gets that title.
+  if (state.server.guest) {
+    bar.innerHTML = `
+      <a class="logo" href="#/title/${esc(state.server.guest)}">${esc(CONFIG.appName)}</a>
+      <div class="hdr-right">
+        <span class="muted guest-note">Shared with you by ${esc(state.server.name || 'a friend')}</span>
+        <button class="btn small" data-action="exit-share">Done</button>
+      </div>`;
+    return;
+  }
   bar.innerHTML = `
     <a class="logo" href="#/">${esc(CONFIG.appName)}</a>
     <nav id="nav"><a href="#/">Home</a></nav>
@@ -350,6 +361,8 @@ export async function title(seq, id, params) {
           <button class="btn primary" data-play="${esc(id)}">▶ ${resume ? 'Resume' : 'Play'}</button>
           ${resume ? `<a class="btn" href="#/watch/${esc(id)}?start=1">↺ Start over</a>` : ''}
           <button class="btn" data-action="toggle-watched" data-key="${esc(id)}" data-watched="${watched ? 1 : 0}">${watched ? '✓ Watched' : 'Mark as watched'}</button>
+          ${state.server.kind === 'jellyfin' && state.server.admin && !state.server.guest
+            ? `<button class="btn" data-action="share" data-key="${esc(id)}" data-title="${esc(item.title)}">↗ Share</button>` : ''}
         </div>
         ${resume ? `<div class="resume"><div class="progress"><span style="width:${((resume / item.duration) * 100).toFixed(1)}%"></span></div><small>${duration(item.duration - resume)} left</small></div>` : ''}
       </div>
@@ -624,7 +637,17 @@ async function jellyfinManage(seq) {
   const s = state.server;
   const [users, sessions] = await Promise.all([s.users(), s.sessions().catch(() => [])]);
   if (stale(seq)) return;
-  const others = users.filter(u => u.Id !== s.userId).sort((a, b) => a.Name.localeCompare(b.Name));
+  // Guest accounts behind share links are listed separately, under "Shared links".
+  const others = users.filter(u => u.Id !== s.userId && !u.Name.startsWith('share-')).sort((a, b) => a.Name.localeCompare(b.Name));
+  let shares = await s.shares().catch(() => []);
+  const expired = shares.filter(x => x.expired);
+  if (expired.length) {
+    await Promise.all(expired.map(x => s.revokeShare(x).catch(() => {})));
+    shares = shares.filter(x => !x.expired);
+    toast(`Removed ${expired.length} expired share link${expired.length > 1 ? 's' : ''}.`);
+  }
+  if (stale(seq)) return;
+  const savedLinks = store.get('jfShareLinks', {});
   const avatar = u => (u.PrimaryImageTag ? `<img src="${esc(s.image(`/Users/${u.Id}/Images/Primary?tag=${u.PrimaryImageTag}`, 88))}" alt="">` : esc(u.Name[0].toUpperCase()));
   const lastSeen = u => (u.LastActivityDate ? `last active ${when(Date.parse(u.LastActivityDate) / 1000)}` : 'never signed in');
 
@@ -641,6 +664,20 @@ async function jellyfinManage(seq) {
       </form>
       <p class="muted invite-note">This creates a Jellyfin account for them with access to all your libraries. You'll get a link to send them. It opens the sign-in screen with their name already filled in.</p>
       <div id="invite-result"></div>
+
+      <h2 class="group-title">Shared links</h2>
+      ${shares.length ? `<div class="pending-list share-list">${shares.map((x, i) => `
+        <div class="pending-row">
+          <span class="share-info">
+            <strong>${esc(x.item?.title || 'A title that was removed')}</strong>${x.note ? ` <span class="muted">· for ${esc(x.note)}</span>` : ''}
+            <small class="muted">shared ${when(x.created / 1000)} · ${x.expires ? `expires ${when(x.expires / 1000)}` : 'no expiry'} · ${x.lastUsed ? `last watched ${when(x.lastUsed / 1000)}` : 'not opened yet'}</small>
+          </span>
+          <span class="member-actions">
+            ${savedLinks[x.id] ? `<button class="btn small" data-copy-share="${i}">Copy link</button>` : ''}
+            <button class="btn small danger" data-revoke="${i}">Revoke</button>
+          </span>
+        </div>`).join('')}</div>`
+        : '<p class="muted">No shared links. Open any movie or show and press <strong>Share</strong> to send it to someone without them signing up.</p>'}
 
       <h2 class="group-title">Watching now</h2>
       ${nowPlayingHtml(sessions) || '<p class="muted">Nobody is watching right now.</p>'}
@@ -715,6 +752,26 @@ async function jellyfinManage(seq) {
   });
 
   app().querySelector('.manage').addEventListener('click', async e => {
+    const copyShare = e.target.closest('[data-copy-share]');
+    if (copyShare) return void copy(savedLinks[shares[copyShare.dataset.copyShare].id]);
+    const revoke = e.target.closest('[data-revoke]');
+    if (revoke) {
+      const x = shares[revoke.dataset.revoke];
+      if (!confirm(`Revoke the link to ${x.item?.title || 'this title'}${x.note ? ` for ${x.note}` : ''}? Anyone using it will lose access right away.`)) return;
+      revoke.disabled = true;
+      try {
+        await s.revokeShare(x);
+        const links = store.get('jfShareLinks', {});
+        delete links[x.id];
+        store.set('jfShareLinks', links);
+        toast('Link revoked.');
+        refresh();
+      } catch (err) {
+        revoke.disabled = false;
+        toast(`Couldn't revoke it: ${err.message}`);
+      }
+      return;
+    }
     const b = e.target.closest('[data-copy],[data-disable],[data-enable],[data-delete]');
     if (!b) return;
     const u = others[b.dataset.copy ?? b.dataset.disable ?? b.dataset.enable ?? b.dataset.delete];
@@ -741,6 +798,15 @@ async function jellyfinManage(seq) {
 
 export function errorView(err) {
   pageTitle('Error');
+  if (state.server?.guest) {
+    // Share-link guests can only see the one title; anything else is "not found" to them.
+    app().innerHTML = `
+      <div class="page-top pad empty">
+        <h2>That isn't part of what was shared with you</h2>
+        <div class="actions"><a class="btn primary" href="#/title/${esc(state.server.guest)}">Back to your title</a></div>
+      </div>`;
+    return;
+  }
   app().innerHTML = `
     <div class="page-top pad empty">
       <h2>Something went wrong</h2>
@@ -1077,6 +1143,97 @@ async function completeJoin(seq, join) {
 }
 
 /* ---------- Jellyfin: server address, "Who's watching?", sign-in ---------- */
+
+/* ---------- share links: one title, no sign-up (Jellyfin) ---------- */
+
+const SHARE_DURATIONS = [[1, '1 day'], [7, '7 days'], [30, '30 days'], [0, 'Until I revoke it']];
+
+export function openShareDialog(itemId, title) {
+  document.querySelector('.dialog-backdrop')?.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'dialog-backdrop';
+  wrap.innerHTML = `
+    <form class="dialog" role="dialog" aria-label="Share ${esc(title)}">
+      <h2>Share “${esc(title)}”</h2>
+      <p class="muted">Anyone with the link can watch it without signing up. They can't see anything else in your library.</p>
+      <label>Who's it for? <span class="muted">(optional, just for your list)</span>
+        <input name="note" maxlength="30" autocomplete="off" placeholder="e.g. Mike">
+      </label>
+      <label>Link works for
+        <select name="days">${SHARE_DURATIONS.map(([d, l]) => `<option value="${d}" ${d === 7 ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      </label>
+      <div class="dialog-result"></div>
+      <div class="actions">
+        <button class="btn accent" data-create>Create link</button>
+        <button type="button" class="btn" data-close-dialog>Close</button>
+      </div>
+    </form>`;
+  document.body.append(wrap);
+  const form = $('.dialog', wrap);
+  form.note.focus();
+  const close = () => wrap.remove();
+  wrap.addEventListener('click', e => {
+    if (e.target === wrap || e.target.closest('[data-close-dialog]')) close();
+  });
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const button = $('[data-create]', form);
+    const result = $('.dialog-result', form);
+    button.disabled = true;
+    button.textContent = 'Creating…';
+    try {
+      const share = await state.server.createShare(itemId, { note: form.note.value, days: Number(form.days.value) });
+      const link = `${location.href.split('#')[0]}#/s/${shareCode.encode(share.link)}`;
+      const links = store.get('jfShareLinks', {});
+      links[share.id] = link;
+      store.set('jfShareLinks', links);
+      result.innerHTML = `
+        <div class="invite-done">
+          <p><strong>Link ready.</strong> Send it to them:</p>
+          <div class="link-row"><input readonly value="${esc(link)}" aria-label="Share link"><button type="button" class="btn small accent" data-copy-share>Copy</button></div>
+          <p class="muted share-hint">Revoke it any time from Manage → Shared links.</p>
+        </div>`;
+      $('[data-copy-share]', result).addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(link);
+          toast('Link copied.');
+        } catch {
+          prompt('Copy this link:', link);
+        }
+      });
+      button.hidden = true;
+      if (/^http:\/\/(localhost|127\.)/.test(state.server.uri)) {
+        result.insertAdjacentHTML('beforeend', `<p class="error">Heads up: you're connected through ${esc(state.server.uri)}, so this link only works on this computer. Sign in through your server's public https:// address to make links that work for friends.</p>`);
+      }
+    } catch (err) {
+      result.innerHTML = `<p class="error">Couldn't create the link: ${esc(err.message)}</p>`;
+      button.disabled = false;
+      button.textContent = 'Create link';
+    }
+  });
+}
+
+// A friend opening a share link: sign in as the guest account and go straight to the title.
+export async function sharedView(seq, code) {
+  hideHeader();
+  pageTitle('Shared with you');
+  const data = shareCode.decode(code);
+  const fail = message => mount(seq, shell(`<h2 class="join-title">${message}</h2><p class="muted" style="text-align:center">Ask the person who sent it for a new link.</p>`));
+  if (!data?.s || !data.u || !data.i) return void fail('This link doesn\'t look right');
+  if (data.x && data.x < Date.now()) return void fail('This link has expired');
+  mount(seq, shell(`<div class="sub-busy"><div class="spinner"></div> Opening…</div>`));
+  try {
+    const [info, session] = await Promise.all([jellyfinAuth.info(data.s), jellyfinAuth.login(data.s, data.u, data.p)]);
+    if (stale(seq)) return;
+    // Remember the visitor's own DingFlix server (if any) so they can get back to it.
+    if (state.server && !state.server.guest) store.set('serverBeforeShare', store.get('server'));
+    setServer({ ...jellyfinAuth.serverConfig(data.s, info, session), guest: data.i, admin: false, owned: false });
+    location.replace(`#/title/${data.i}`);
+  } catch (err) {
+    if (stale(seq)) return;
+    fail(err.status === 401 ? 'This link has been turned off' : 'Couldn\'t open this link right now. Try again in a bit');
+  }
+}
 
 export function jellyfinLink(server, userName) {
   const base = location.href.split('#')[0];

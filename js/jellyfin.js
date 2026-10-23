@@ -110,7 +110,8 @@ export class JellyfinServer {
   kind = 'jellyfin';
   supports = { subtitleSize: true };
 
-  constructor({ uri, token, userId, userName, userImage, name, id, admin }) {
+  constructor({ uri, token, userId, userName, userImage, name, id, admin, guest }) {
+    this.guest = guest || null; // set when signed in through a share link: the one title they can see
     this.uri = uri.replace(/\/+$/, '');
     this.token = token;
     this.userId = userId;
@@ -539,4 +540,90 @@ export class JellyfinServer {
   }
 
   deleteUser(userId) { return this.api(`/Users/${userId}`, { method: 'DELETE', raw: true }); }
+
+  /* --- share links: one title, no sign-up (owner only) --- */
+
+  async setTag(itemId, tag, on) {
+    const item = await this.api(`/Items/${itemId}`, { params: { userId: this.userId } });
+    const tags = new Set(item.Tags || []);
+    if (on) tags.add(tag);
+    else tags.delete(tag);
+    item.Tags = [...tags];
+    await this.api(`/Items/${itemId}`, { method: 'POST', json: item, raw: true });
+  }
+
+  // Shares one movie or show: tags it (a show's seasons and episodes too), then
+  // creates a hidden guest account that can only see items with that tag.
+  async createShare(itemId, { note = '', days = 0 } = {}) {
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const tag = `dfshare-${id}`;
+    const expires = days ? Date.now() + days * 86400000 : 0;
+    const cleanNote = note.replace(/[^\w .'@+-]/g, '').trim().slice(0, 30);
+    const name = `share-${id}-${expires ? expires.toString(36) : 'never'}${cleanNote ? ` ${cleanNote}` : ''}`;
+    const password = Array.from(crypto.getRandomValues(new Uint8Array(18)), b => b.toString(36).padStart(2, '0')).join('').slice(0, 28);
+
+    const item = await this.api(`/Items/${itemId}`, { params: { userId: this.userId } });
+    const targets = [itemId];
+    if (item.Type === 'Series' || item.Type === 'Season') {
+      const kids = await this.api('/Items', { params: { userId: this.userId, ParentId: itemId, Recursive: true, IncludeItemTypes: 'Season,Episode' } });
+      targets.push(...(kids.Items || []).map(k => k.Id));
+    }
+    for (const target of targets) await this.setTag(target, tag, true);
+
+    const user = await this.api('/Users/New', { method: 'POST', json: { Name: name, Password: password } });
+    await this.updatePolicy(user.Id, {
+      IsHidden: true,
+      IsAdministrator: false,
+      EnableAllFolders: true,
+      AllowedTags: [tag],
+      EnableContentDownloading: false,
+      EnableContentDeletion: false,
+      EnableRemoteControlOfOtherUsers: false,
+      EnableSharedDeviceControl: false,
+      EnableLiveTvAccess: false,
+      EnableLiveTvManagement: false,
+      MaxActiveSessions: 2,
+    });
+    return { id, userId: user.Id, link: { s: this.uri, u: name, p: password, i: itemId, x: expires } };
+  }
+
+  // Everything DingFlix needs about a share is in its guest account's name.
+  static parseShareName(name) {
+    const m = /^share-([a-z0-9]+)-([a-z0-9]+)(?: (.*))?$/.exec(name || '');
+    if (!m) return null;
+    return { id: m[1], tag: `dfshare-${m[1]}`, expires: m[2] === 'never' ? 0 : parseInt(m[2], 36), note: m[3] || '', created: parseInt(m[1].slice(0, -4), 36) };
+  }
+
+  async shares() {
+    const users = await this.users();
+    const list = users.map(u => ({ ...JellyfinServer.parseShareName(u.Name), user: u })).filter(s => s.id);
+    await Promise.all(list.map(async s => {
+      const r = await this.api('/Items', { params: { userId: this.userId, Tags: s.tag, Recursive: true, IncludeItemTypes: 'Movie,Series', Fields: ITEM_FIELDS } }).catch(() => ({}));
+      s.item = this.toItem((r.Items || [])[0]);
+      s.lastUsed = s.user.LastActivityDate ? Date.parse(s.user.LastActivityDate) : 0;
+      s.expired = !!s.expires && s.expires < Date.now();
+    }));
+    return list.sort((a, b) => b.created - a.created);
+  }
+
+  async revokeShare(share) {
+    await this.deleteUser(share.user.Id).catch(err => { if (err.status !== 404) throw err; });
+    const r = await this.api('/Items', { params: { userId: this.userId, Tags: share.tag, Recursive: true } }).catch(() => ({}));
+    for (const item of r.Items || []) await this.setTag(item.Id, share.tag, false).catch(() => {});
+  }
 }
+
+// Share links carry the guest login (server, username, password, title) in the URL.
+export const shareCode = {
+  encode(data) {
+    return btoa(unescape(encodeURIComponent(JSON.stringify(data)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  },
+  decode(code) {
+    try {
+      const b64 = code.replace(/-/g, '+').replace(/_/g, '/');
+      return JSON.parse(decodeURIComponent(escape(atob(b64))));
+    } catch {
+      return null;
+    }
+  },
+};

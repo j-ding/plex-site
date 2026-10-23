@@ -520,6 +520,43 @@ a.server { color: inherit; }
 .server-kind { display: block; margin-top: 2px; font-size: 12px; }
 .profiles .pin-box .name-input + .name-input { margin-top: 8px; }
 
+/* ---------- share links ---------- */
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, .65);
+}
+.dialog {
+  width: 100%;
+  max-width: 480px;
+  padding: 24px;
+  background: var(--bg-2);
+  border: 1px solid var(--bg-3);
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .6);
+}
+.dialog h2 { font-size: 20px; margin-bottom: 8px; }
+.dialog > p { margin: 0 0 16px; font-size: 14px; }
+.dialog label { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; font-size: 14px; }
+.dialog input, .dialog select {
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--bg-3);
+  border-radius: 4px;
+}
+.dialog input:focus { outline: none; border-color: var(--accent); }
+.dialog .invite-done { margin: 0 0 12px; }
+.dialog .error { margin: 8px 0 0; }
+.share-hint { margin: 8px 0 0; font-size: 13px; }
+.share-info { display: flex; flex-direction: column; }
+.guest-note { font-size: 14px; }
+@media (max-width: 760px) { .guest-note { display: none; } }
+
 /* ---------- profiles ---------- */
 
 .profiles { width: 100%; max-width: 760px; text-align: center; }

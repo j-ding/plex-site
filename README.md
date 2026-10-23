@@ -124,6 +124,25 @@ Differences from Plex:
   `C:\Users\Ding\Videos\Plex` so it can read the same media as Plex.
 - Jellyfin only saves "continue watching" progress after the first 5% of a title.
 
+### Share one movie or show, no sign-up (Jellyfin only)
+
+On any title page, the Jellyfin admin gets a **Share** button. Pick who it's for
+(just a note for you) and how long the link should work (1 day, 7 days, 30 days
+or until revoked), and send the link. Whoever opens it watches that one title
+straight away: no account, no password, and they can't see anything else in your
+library.
+
+Behind the scenes the title (and, for a show, its seasons and episodes) gets a
+`dfshare-…` tag, and a hidden guest account is created that can only see items
+with that tag, can't download, and is limited to two streams. Manage → **Shared
+links** lists every link with when it was last watched; **Revoke** deletes the
+guest account and removes the tag. Expired links are cleaned up automatically the
+next time the admin opens Manage.
+
+Anyone with the link can watch, so treat it like a password. It needs the server's
+public `https://` address to work for people outside your home. Plex can't do this
+without Plex Pass (sharing only selected titles is a Plex Pass feature).
+
 ## How it works
 
 | File | Purpose |

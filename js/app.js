@@ -34,6 +34,13 @@ async function route() {
     const seq = ++state.seq;
     return run(() => views.jellyfinView(seq, params), seq);
   }
+  const shared = path.match(/^\/s\/([\w-]+)$/);
+  if (shared) {
+    closePlayer();
+    state.rendered = raw;
+    const seq = ++state.seq;
+    return run(() => views.sharedView(seq, shared[1]), seq);
+  }
   if (path === '/join') {
     closePlayer();
     state.rendered = raw;
@@ -41,6 +48,8 @@ async function route() {
     return run(() => views.joinView(seq, params), seq);
   }
   if (!state.server) return void location.replace('#/connect');
+  // Share-link guests can only open their one title (and play it).
+  if (state.server.guest && !/^\/(title|watch)\//.test(path)) return void location.replace(`#/title/${state.server.guest}`);
   views.renderHeader().catch(() => {});
 
   // The player sits on top of whatever page is already rendered, so closing it
@@ -81,6 +90,7 @@ async function run(render, seq) {
     if (seq !== state.seq) return;
     if (err.status === 401) {
       // The server stopped accepting our token: the profile was deleted or its access removed.
+      if (state.server?.guest) return void endShare('This link has been turned off');
       if (state.server?.kind === 'jellyfin') {
         const uri = state.server.uri;
         views.toast('Please sign in again.');
@@ -107,6 +117,28 @@ async function run(render, seq) {
     }
     views.errorView(err);
   }
+}
+
+// Leave share-link mode: go back to the visitor's own server if they had one.
+function endShare(message) {
+  closePlayer();
+  const previous = store.get('serverBeforeShare');
+  store.del('serverBeforeShare');
+  if (previous) {
+    setServer(previous);
+    if (message) views.toast(message);
+    return void location.replace('#/');
+  }
+  state.server = null;
+  state.rendered = null;
+  store.del('server');
+  views.hideHeader();
+  $('#app').innerHTML = `
+    <div class="connect"><div class="connect-card">
+      <div class="logo big">DingFlix</div>
+      <h2 class="join-title">${message || 'Thanks for watching'}</h2>
+      <p class="muted" style="text-align:center">${message ? 'Ask the person who sent it for a new link.' : 'Open the link again any time to keep watching.'}</p>
+    </div></div>`;
 }
 
 async function reconnect() {
@@ -202,6 +234,12 @@ document.addEventListener('click', async e => {
       if (location.hash === '#/connect') route();
       else location.hash = '#/connect';
       break;
+    case 'share':
+      views.openShareDialog(action.dataset.key, action.dataset.title);
+      break;
+    case 'exit-share':
+      endShare();
+      break;
     case 'scan':
       scanLibraries(action);
       break;
@@ -236,7 +274,7 @@ history.replaceState({ root: true }, '');
 await finishLogin();
 
 // A device that hasn't picked a profile yet starts at "Who's watching?".
-if (state.userToken && !state.profile && state.server?.kind !== 'jellyfin' && !/^#\/(connect|profiles|join|jellyfin)/.test(location.hash)) {
+if (state.userToken && !state.profile && state.server?.kind !== 'jellyfin' && !/^#\/(connect|profiles|join|jellyfin|s\/)/.test(location.hash)) {
   history.replaceState(history.state, '', '#/profiles');
 }
 route();
