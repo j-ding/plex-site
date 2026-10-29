@@ -362,6 +362,39 @@ export class JellyfinServer {
     ];
   }
 
+  // Recommendation rows for a title page: Jellyfin's "similar" list, more from the same
+  // director, and more from the title's most specific categories (country, themes, genre).
+  async recommendations(item) {
+    const rows = await this.related(item.ratingKey).catch(() => []);
+    const sections = (await this.sections()).filter(s => s.type === item.type);
+    let section, catalog;
+    for (const s of sections) {
+      const list = await this.catalog(s.key).catch(() => []);
+      if (list.some(x => x.ratingKey === item.ratingKey)) [section, catalog] = [s, list];
+    }
+    if (!catalog) return rows;
+    const others = catalog.filter(x => x.ratingKey !== item.ratingKey);
+
+    const director = item.Director?.[0]?.tag;
+    if (director) {
+      const byDirector = others.filter(x => x.Director?.some(d => d.tag === director));
+      if (byDirector.length) rows.push({ title: `More from ${director}`, type: item.type, hubIdentifier: 'director', Metadata: byDirector.slice(0, 20) });
+    }
+
+    const noun = section.type === 'show' ? 'Shows' : 'Movies';
+    const mine = (await this.categories(section.key)).filter(c => c.items.some(x => x.ratingKey === item.ratingKey));
+    // Country first, then the most distinctive themes (Revenge, Anime, …), then genres.
+    const kindRank = { country: 0, theme: 1, genre: 2 };
+    const picks = mine.sort((a, b) => kindRank[a.kind] - kindRank[b.kind] || a.rank - b.rank || b.items.length - a.items.length).slice(0, 3);
+    for (const c of picks) {
+      const list = c.items.filter(x => x.ratingKey !== item.ratingKey);
+      if (!list.length) continue;
+      const label = c.kind === 'genre' ? `${c.label} ${noun}` : c.label;
+      rows.push({ title: `More ${label}`, type: item.type, hubIdentifier: `rec-${c.key}`, link: `#/library/${section.key}?cat=${c.key}`, Metadata: list.slice(0, 20) });
+    }
+    return rows;
+  }
+
   async related(id) {
     const r = await this.api(`/Items/${id}/Similar`, { params: { userId: this.userId, Limit: 16, Fields: ITEM_FIELDS } });
     const items = r.Items || [];

@@ -48,8 +48,8 @@ const byRating = (a, b) => (b.audienceRating ?? 0) - (a.audienceRating ?? 0) || 
 // Returns every category with enough titles: { key, label, kind, items }.
 export function buildCategories(items, { noun = 'Movies' } = {}) {
   const groups = new Map();
-  const add = (key, label, kind, item) => {
-    if (!groups.has(key)) groups.set(key, { key, label, kind, items: [] });
+  const add = (key, label, kind, item, rank = 0) => {
+    if (!groups.has(key)) groups.set(key, { key, label, kind, rank, items: [] });
     const g = groups.get(key);
     if (!g.items.includes(item)) g.items.push(item);
   };
@@ -60,9 +60,13 @@ export function buildCategories(items, { noun = 'Movies' } = {}) {
     const adj = COUNTRY_LABELS[(item.countries || [])[0]];
     if (adj) add(`c-${slug(adj)}`, `${adj} ${noun}`, 'country', item);
     const words = new Set((item.keywords || []).map(k => k.toLowerCase()));
-    for (const [label, keys] of THEMES) {
-      if (keys.some(k => words.has(k))) add(`t-${slug(label)}`, label, 'theme', item);
-    }
+    // THEMES is listed most-distinctive first; `rank` keeps that order for recommendations.
+    const animated = (item.Genre || []).some(g => g.tag === 'Animation');
+    THEMES.forEach(([label, keys], rank) => {
+      // Anime has to actually be animated (live-action manga adaptations like Oldboy aren't).
+      if (label === 'Anime' && !animated) return;
+      if (keys.some(k => words.has(k))) add(`t-${slug(label)}`, label, 'theme', item, rank);
+    });
   }
   return [...groups.values()]
     .filter(g => g.items.length >= MIN_TITLES)

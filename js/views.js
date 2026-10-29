@@ -423,7 +423,8 @@ export async function title(seq, id, params) {
   const isShow = item.type === 'show';
   const [seasons, related] = await Promise.all([
     isShow ? s.children(id).then(l => l.filter(x => x.type === 'season')) : [],
-    s.related(id).catch(() => []),
+    // Jellyfin builds richer recommendations (director, categories); Plex has its own related hubs.
+    (s.recommendations ? s.recommendations(item) : s.related(id)).catch(() => []),
   ]);
   if (stale(seq)) return;
   pageTitle(item.title);
