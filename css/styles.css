@@ -323,6 +323,31 @@ select {
   font-weight: 800;
 }
 
+/* ---------- categories ---------- */
+
+.cat-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 4px; }
+.cat-chips .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--bg-3);
+  border-radius: 999px;
+  color: #c4c4cf;
+  font-size: 13px;
+  white-space: nowrap;
+  transition: border-color .15s, color .15s;
+}
+.cat-chips .chip:hover { border-color: var(--muted); color: var(--text); }
+.cat-chips .chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 650; }
+.chip-count { font-size: 11px; opacity: .7; }
+.cat-chips .chip.extra { display: none; }
+.cat-chips.expanded .chip.extra { display: inline-flex; }
+.cat-chips .chip-more { background: none; cursor: pointer; color: var(--accent); border-style: dashed; }
+.see-all { margin-left: 10px; font-size: 13px; font-weight: 500; color: var(--muted); }
+.see-all:hover { color: var(--accent); }
+.browse-all { padding-bottom: 60px; }
+
 /* ---------- grids ---------- */
 
 .page-title { font-size: clamp(26px, 3vw, 38px); }

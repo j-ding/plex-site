@@ -108,6 +108,10 @@ Differences from Plex:
 
 - **Hardware transcoding and HDR tone mapping are free** (Dashboard → Playback →
   Transcoding). This setup uses the AMD GPU (AMF) with tone mapping on.
+- **Categories**: the Movies and TV Shows pages get category buttons (Featured,
+  All, Korean, Action, Revenge, Anime, …) and the home page gets category rows.
+  They're built from each title's genres, main production country and keywords,
+  and a category only appears once it has at least 3 titles.
 - **Text subtitles** (SRT and similar) are drawn by the browser, so changing their
   size is instant. Image subtitles (PGS) are burned in, like on Plex.
 - **Inviting** someone creates a Jellyfin account for them (Manage → Invite

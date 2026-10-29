@@ -74,7 +74,7 @@ async function route() {
 
   let m;
   if (path === '/') return run(() => views.home(seq), seq);
-  if ((m = path.match(/^\/library\/(\w+)$/))) return run(() => views.library(seq, m[1]), seq);
+  if ((m = path.match(/^\/library\/(\w+)$/))) return run(() => views.library(seq, m[1], params), seq);
   if ((m = path.match(/^\/title\/([\w-]+)$/))) return run(() => views.title(seq, m[1], params), seq);
   if (path === '/search') return run(() => views.search(seq, params.get('q') || ''), seq);
   if (path === '/manage') return run(() => views.manage(seq), seq);

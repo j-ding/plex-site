@@ -1,6 +1,7 @@
 import { CONFIG } from './config.js';
 import { store } from './util.js';
 import { clientId, browser } from './plex.js';
+import { buildCategories, featuredOrder, rowItems } from './categories.js';
 
 // Jellyfin talks in 100-nanosecond "ticks"; DingFlix uses milliseconds like Plex.
 const TICKS_PER_MS = 10000;
@@ -196,6 +197,11 @@ export class JellyfinServer {
       Role: people('Actor'),
       Director: people('Director'),
       Image: i.ImageTags?.Logo ? [{ type: 'clearLogo', url: img(i.Id, 'Logo', i.ImageTags.Logo) }] : [],
+      // For category rows and client-side sorting.
+      countries: i.ProductionLocations || [],
+      keywords: i.Tags || [],
+      addedAt: i.DateCreated ? Date.parse(i.DateCreated) / 1000 : undefined,
+      releasedAt: i.PremiereDate ? Date.parse(i.PremiereDate) / 1000 : undefined,
     };
     if (type === 'season') {
       Object.assign(item, { parentRatingKey: i.SeriesId || i.ParentId, parentTitle: i.SeriesName, parentThumb: seriesPoster });
@@ -295,15 +301,48 @@ export class JellyfinServer {
     return this.api('/Items/Latest', { params: { userId: this.userId, ParentId: sectionId, Limit: limit, Fields: ITEM_FIELDS, GroupItems: true } });
   }
 
+  // Every title in a library (with genres, countries and keywords), kept for a few
+  // minutes so category rows and the full grid don't refetch on every page.
+  async catalog(sectionId) {
+    this.catalogs ??= new Map();
+    const cached = this.catalogs.get(sectionId);
+    if (cached && Date.now() - cached.at < 5 * 60 * 1000) return cached.items;
+    const section = (await this.sections()).find(s => s.key === sectionId);
+    const r = await this.query({
+      ParentId: sectionId, Recursive: true, IncludeItemTypes: section?.type === 'show' ? 'Series' : 'Movie',
+      SortBy: 'SortName', Limit: 10000, Fields: `${ITEM_FIELDS},Tags,ProductionLocations,PremiereDate`,
+    });
+    const items = (r.Items || []).map(x => this.toItem(x));
+    this.catalogs.set(sectionId, { at: Date.now(), items });
+    return items;
+  }
+
+  // Category rows (Korean, Action, Revenge, …) for a library, in a varied order.
+  async categories(sectionId) {
+    const section = (await this.sections()).find(s => s.key === sectionId);
+    const noun = section?.type === 'show' ? 'Shows' : 'Movies';
+    return featuredOrder(buildCategories(await this.catalog(sectionId), { noun }));
+  }
+
   async hubs() {
     const sections = await this.sections();
-    const [nextUp, ...latest] = await Promise.all([
+    const [nextUp, latest, categories] = await Promise.all([
       this.api('/Shows/NextUp', { params: { userId: this.userId, Limit: 20, Fields: ITEM_FIELDS } }).catch(() => ({ Items: [] })),
-      ...sections.map(s => this.latest(s.key).catch(() => [])),
+      Promise.all(sections.map(s => this.latest(s.key).catch(() => []))),
+      Promise.all(sections.map(s => this.categories(s.key).catch(() => []))),
     ]);
+    // A taste of each library's categories on the home page; the library page has them all.
+    const categoryRows = sections.flatMap((s, i) => categories[i].slice(0, s.type === 'movie' ? 6 : 3).map(cat => ({
+      title: cat.kind === 'genre' ? `${cat.label} ${s.type === 'show' ? 'Shows' : 'Movies'}` : cat.label,
+      type: s.type,
+      hubIdentifier: `cat-${s.key}-${cat.key}`,
+      link: `#/library/${s.key}?cat=${cat.key}`,
+      Metadata: rowItems(cat),
+    })));
     return [
       this.hub('Next Up', 'episode', nextUp.Items || [], 'nextup'),
       ...sections.map((s, i) => this.hub(`Recently Added ${s.title}`, s.type, latest[i] || [])),
+      ...categoryRows,
     ];
   }
 

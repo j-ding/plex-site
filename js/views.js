@@ -2,6 +2,7 @@ import { CONFIG } from './config.js';
 import { state, setServer, setProfile, getSections, viewerToken, isAdmin } from './state.js';
 import { auth, connect, PlexServer } from './plex.js';
 import { jellyfinAuth, shareCode } from './jellyfin.js';
+import { rowItems } from './categories.js';
 import { esc, $, $$, store, duration, debounce } from './util.js';
 
 const VIDEO_TYPES = new Set(['movie', 'show', 'season', 'episode']);
@@ -175,11 +176,11 @@ function card(item, { landscape = false, resume = false } = {}) {
     </a>`;
 }
 
-function row(title, items, opts) {
+function row(title, items, opts, link) {
   if (!items?.length) return '';
   return `
     <section class="row">
-      <h2>${esc(title)}</h2>
+      <h2>${esc(title)}${link ? ` <a class="see-all" href="${esc(link)}">See all ›</a>` : ''}</h2>
       <div class="row-track">
         <button class="row-nav prev" aria-label="Scroll left">‹</button>
         <div class="row-scroller">${items.map(i => card(i, opts)).join('')}</div>
@@ -193,7 +194,7 @@ function hubRows(hubs) {
     .filter(h => !/ondeck|continue/i.test(h.hubIdentifier || ''))
     .map(h => {
       const items = (h.Metadata || []).filter(m => VIDEO_TYPES.has(m.type));
-      return row(h.title, items, { landscape: h.type === 'episode' });
+      return row(h.title, items, { landscape: h.type === 'episode' }, h.link);
     })
     .join('');
 }
@@ -264,11 +265,12 @@ export async function home(seq) {
     : `<div class="page-top pad empty"><h2>Nothing here yet</h2><p class="muted">Add some movies or shows to your Plex libraries and they'll show up here.</p></div>`);
 }
 
-export async function library(seq, id) {
+export async function library(seq, id, params = new URLSearchParams()) {
   app().innerHTML = loading();
   const section = (await getSections()).find(x => String(x.key) === id);
   if (!section) throw new Error('That library no longer exists on this server.');
   pageTitle(section.title);
+  if (state.server.categories) return categoryLibrary(seq, id, section, params);
   const hubs = await state.server.sectionHubs(id).catch(() => []);
   const sort = store.get(`sort.${id}`, 'titleSort');
   if (!mount(seq, `
@@ -289,6 +291,88 @@ export async function library(seq, id) {
     stop();
     stop = startGrid(seq, id, e.target.value);
   });
+}
+
+// Library page with category buttons (Featured / All / Korean / Action / Revenge …).
+// Used when the server can hand over the whole library at once (Jellyfin).
+const CLIENT_SORTS = {
+  titleSort: (a, b) => sortTitle(a).localeCompare(sortTitle(b)),
+  'addedAt:desc': (a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0),
+  'originallyAvailableAt:desc': (a, b) => (b.releasedAt ?? b.year ?? 0) - (a.releasedAt ?? a.year ?? 0),
+  'audienceRating:desc': (a, b) => (b.audienceRating ?? 0) - (a.audienceRating ?? 0),
+  'lastViewedAt:desc': (a, b) => (b.lastViewedAt ?? 0) - (a.lastViewedAt ?? 0),
+};
+const sortTitle = item => (item.title || '').replace(/^(the|a|an)\s+/i, '');
+const KIND_ORDER = { country: 0, genre: 1, theme: 2 };
+
+async function categoryLibrary(seq, id, section, params) {
+  const s = state.server;
+  const [items, categories, hubs] = await Promise.all([s.catalog(id), s.categories(id), s.sectionHubs(id).catch(() => [])]);
+  if (stale(seq)) return;
+  const noun = section.type === 'show' ? 'shows' : 'movies';
+  const current = params.get('cat') || 'featured';
+  const base = `#/library/${id}`;
+  const shortLabel = c => c.label.replace(/ (Movies|Shows)$/, '');
+  const chip = (key, label, count, extra = false) => `
+    <a class="chip ${current === key ? 'on' : ''} ${extra ? 'extra' : ''}" href="${key === 'featured' ? base : `${base}?cat=${key}`}">${esc(label)}${count != null ? ` <span class="chip-count">${count}</span>` : ''}</a>`;
+  const chipOrder = [...categories].sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || b.items.length - a.items.length);
+  // Show the biggest categories up front; the rest sit behind "More" (open if one of them is selected).
+  const SHOWN = 10;
+  const expanded = chipOrder.findIndex(c => c.key === current) >= SHOWN;
+
+  let body;
+  let gridItems = null;
+  if (current === 'featured') {
+    const latest = hubs.find(h => h.title === 'Recently Added');
+    const rated = hubs.find(h => h.title === 'Top Rated');
+    body = `
+      <div class="rows">
+        ${hubRows([latest, rated].filter(Boolean))}
+        ${categories.map(c => row(c.label, rowItems(c), {}, `${base}?cat=${c.key}`)).join('')}
+      </div>
+      <div class="pad browse-all"><a class="btn" href="${base}?cat=all">Browse all ${items.length} ${noun} ›</a></div>`;
+  } else {
+    const chosen = current === 'all' ? { label: `All ${noun}`, items } : categories.find(c => c.key === current);
+    if (!chosen) return void location.replace(base);
+    gridItems = chosen.items;
+    const sort = store.get(`sort.${id}`, 'titleSort');
+    body = `
+      <section class="pad browse">
+        <div class="grid-head">
+          <h2>${esc(chosen.label)} <span class="muted">${gridItems.length}</span></h2>
+          <select id="sort" aria-label="Sort">${SORTS.map(([v, l]) => `<option value="${v}" ${v === sort ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        </div>
+        <div class="grid" id="grid"></div>
+      </section>`;
+  }
+
+  if (!mount(seq, `
+    <div class="page-top pad">
+      <h1 class="page-title">${esc(section.title)}</h1>
+      <nav class="cat-chips ${expanded ? 'expanded' : ''}" aria-label="Categories">
+        ${chip('featured', 'Featured')}${chip('all', `All ${noun}`, items.length)}
+        ${chipOrder.map((c, i) => chip(c.key, shortLabel(c), c.items.length, i >= SHOWN)).join('')}
+        ${chipOrder.length > SHOWN ? `<button type="button" class="chip chip-more" aria-expanded="${expanded}">${expanded ? 'Less ▴' : `More ▾`}</button>` : ''}
+      </nav>
+    </div>
+    ${body}`)) return;
+
+  $('.chip-more')?.addEventListener('click', e => {
+    const open = $('.cat-chips').classList.toggle('expanded');
+    e.currentTarget.textContent = open ? 'Less ▴' : 'More ▾';
+    e.currentTarget.setAttribute('aria-expanded', open);
+  });
+
+  if (gridItems) {
+    const draw = sort => {
+      $('#grid').innerHTML = [...gridItems].sort(CLIENT_SORTS[sort] || CLIENT_SORTS.titleSort).map(i => card(i)).join('');
+    };
+    draw($('#sort').value);
+    $('#sort').addEventListener('change', e => {
+      store.set(`sort.${id}`, e.target.value);
+      draw(e.target.value);
+    });
+  }
 }
 
 // Infinite-scrolling grid of a whole library. Returns a function that stops it.
