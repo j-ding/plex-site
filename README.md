@@ -33,6 +33,11 @@ touches it.
   example to keep a horror film away from a kid's profile. Hidden titles use
   Jellyfin's blocked tags, so they're gone in Jellyfin's own apps too. Manage →
   Hidden titles lists them with an Unhide button.
+- Watch together (Jellyfin): a **Friends Watching Now** row on the home page
+  shows what everyone else is playing. Press **Join** and you start where they
+  are; after that playback stays in sync (anyone can pause, play or skip, and
+  everyone follows to the next episode) and a chat sits beside the video (under
+  it on phones). The owner turns it on in Manage → Watch together.
 - Search across all libraries
 - **Manage** tab for the server owner: everyone with access, what they've
   finished watching, who's watching right now, and buttons to remove someone's
@@ -146,6 +151,21 @@ Differences from Plex:
   `C:\Users\Ding\Videos\Plex` so it can read the same media as Plex.
 - Jellyfin only saves "continue watching" progress after the first 5% of a title.
 
+### Watch together (Jellyfin only)
+
+Manage → **Watch together → Turn on for everyone** gives every account (not
+share-link guests) Jellyfin's *Allow remote control of other users* permission.
+That's what lets people see each other's sessions and send messages between
+them. It also lets their Jellyfin apps control each other's playback, which is
+why it's a switch. New accounts get it while it's on.
+
+Each DingFlix tab keeps a WebSocket open to Jellyfin. The person being joined
+hosts: guests send their pauses, skips and chat to the host, and the host sends
+everyone its position every few seconds and passes the chat along, all as
+Jellyfin session messages, so nothing else needs to run. Joining someone who's
+watching in another Jellyfin app (the TV app, say) starts you where they are,
+but without sync or chat. The chat isn't saved anywhere.
+
 ### Share one movie or show, no sign-up (Jellyfin only)
 
 On any title page, the Jellyfin admin gets a **Share** button. Pick who it's for
@@ -188,6 +208,7 @@ downloader and its Sources) happens in HolyArrs.
 | `js/views.js` | Pages: home, library, title, search, sign-in and server picker |
 | `js/player.js` | Video player: direct play or HLS (via hls.js), progress reporting, up-next |
 | `js/trailers.js` | Trailer previews on banners and poster pop-outs (YouTube embeds) |
+| `js/party.js` | Watch together: the live connection to Jellyfin, synced playback and chat |
 | `js/holyarrs.js` | Links into a HolyArrs install: address, search and title pages |
 | `js/app.js` | Hash router, error handling and auto-reconnect, global click handling |
 | `js/state.js` | Current server and account, saved in localStorage |

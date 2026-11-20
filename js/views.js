@@ -1,7 +1,7 @@
 import { CONFIG } from './config.js';
 import { state, setServer, setProfile, getSections, viewerToken, isAdmin } from './state.js';
 import { auth, connect, PlexServer } from './plex.js';
-import { jellyfinAuth, shareCode } from './jellyfin.js';
+import { jellyfinAuth, shareCode, JellyfinServer } from './jellyfin.js';
 import { rowItems } from './categories.js';
 import { esc, $, $$, store, duration, debounce } from './util.js';
 import { heroTrailer, initPreviews, canPreview, trailersOn } from './trailers.js';
@@ -149,7 +149,23 @@ const airDay = ms => {
   return new Date(ms).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 };
 
+const minutesIn = ms => {
+  const m = Math.floor(ms / 60000);
+  return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min in` : m ? `${m} min in` : 'just started';
+};
+
 function cardInfo(item, landscape) {
+  // A friend's card joins them where they are.
+  if (item.friend) {
+    const f = item.friend;
+    const ep = item.type === 'episode' ? `S${item.parentIndex ?? '?'}:E${item.index ?? '?'} · ` : '';
+    return {
+      href: `#/watch/${item.ratingKey}?join=${encodeURIComponent(f.sessionId)}`,
+      img: item.type === 'episode' ? item.thumb || item.grandparentArt : item.art || item.thumb,
+      title: item.type === 'episode' ? item.grandparentTitle : item.title,
+      sub: `${f.name} · ${ep}${f.paused ? 'paused' : minutesIn(f.position)}`,
+    };
+  }
   // An episode that isn't out yet can't play, so it opens its show.
   if (item.upcoming) {
     return {
@@ -189,11 +205,12 @@ function card(item, { landscape = false, resume = false } = {}) {
   if (resume) info.href = `#/watch/${item.ratingKey}`;
   const [w, h] = landscape ? [480, 270] : [300, 450];
   const src = img(info.img, w, h);
-  const pct = item.viewOffset && item.duration ? Math.min(100, (item.viewOffset / item.duration) * 100) : 0;
+  const at = item.friend ? item.friend.position : item.viewOffset;
+  const pct = at && item.duration ? Math.min(100, (at / item.duration) * 100) : 0;
   const unwatched = item.type === 'show' && item.leafCount ? item.leafCount - (item.viewedLeafCount || 0) : 0;
   const watched = item.type === 'movie' && item.viewCount && !item.viewOffset;
   // Movies and shows get a trailer pop-out when the mouse rests on them.
-  const previewable = !resume && (item.type === 'movie' || item.type === 'show');
+  const previewable = !resume && !item.friend && (item.type === 'movie' || item.type === 'show');
   return `
     <a class="card ${landscape ? 'landscape' : 'poster'}" href="${esc(info.href)}" title="${esc(info.title)}"${previewable ? ` data-id="${esc(item.ratingKey)}"` : ''}>
       <div class="card-img">
@@ -201,7 +218,8 @@ function card(item, { landscape = false, resume = false } = {}) {
         ${src ? `<img loading="lazy" src="${esc(src)}" alt="" onerror="this.remove()">` : ''}
         ${pct ? `<div class="progress"><span style="width:${pct.toFixed(1)}%"></span></div>` : ''}
         ${unwatched > 0 ? `<span class="badge">${unwatched}</span>` : ''}
-        ${watched ? `<span class="badge" aria-label="Watched">✓</span>` : ''}
+        ${watched && !item.friend ? `<span class="badge" aria-label="Watched">✓</span>` : ''}
+        ${item.friend ? `<span class="join-badge">${item.friend.dingflix ? 'Join' : 'Watch too'}</span>` : ''}
       </div>
       <div class="card-text">
         <div class="card-title">${esc(info.title)}</div>
@@ -210,10 +228,10 @@ function card(item, { landscape = false, resume = false } = {}) {
     </a>`;
 }
 
-function row(title, items, opts, link) {
+function row(title, items, opts, link, cls = '') {
   if (!items?.length) return '';
   return `
-    <section class="row">
+    <section class="row${cls ? ` ${cls}` : ''}">
       <h2>${esc(title)}${link ? ` <a class="see-all" href="${esc(link)}">See all ›</a>` : ''}</h2>
       <div class="row-track">
         <button class="row-nav prev" aria-label="Scroll left">‹</button>
@@ -289,18 +307,46 @@ export async function home(seq) {
   pageTitle();
   app().innerHTML = loading();
   const s = state.server;
-  const [deck, hubs, soon] = await Promise.all([s.onDeck().catch(() => []), s.hubs(), s.upcoming ? s.upcoming(20).catch(() => []) : []]);
+  const [deck, hubs, soon, friends] = await Promise.all([
+    s.onDeck().catch(() => []), s.hubs(), s.upcoming ? s.upcoming(20).catch(() => []) : [],
+    s.friendsWatching && !s.guest ? s.friendsWatching().catch(() => []) : [],
+  ]);
   const heroPool = hubs
     .filter(h => h.type === 'movie' || h.type === 'show')
     .flatMap(h => h.Metadata || [])
     .filter(m => m.art && m.summary);
   const pick = heroPool[Math.floor(Math.random() * heroPool.length)];
-  const rows = row('Continue Watching', deck, { landscape: true, resume: true })
+  const rows = friendsRow(friends)
+    + row('Continue Watching', deck, { landscape: true, resume: true })
     + row('Coming Up', soon, { landscape: true }, '#/upcoming')
     + hubRows(hubs);
   if (mount(seq, rows
     ? `${hero(pick)}<div class="rows ${pick ? 'under-hero' : 'page-top'}">${rows}</div>`
-    : `<div class="page-top pad empty"><h2>Nothing here yet</h2><p class="muted">Add some movies or shows to your Plex libraries and they'll show up here.</p></div>`)) heroTrailer($('.hero'), pick?.ratingKey);
+    : `<div class="page-top pad empty"><h2>Nothing here yet</h2><p class="muted">Add some movies or shows to your Plex libraries and they'll show up here.</p></div>`)) {
+    heroTrailer($('.hero'), pick?.ratingKey);
+    if (s.friendsWatching && !s.guest) keepFriendsFresh(seq);
+  }
+}
+
+const friendsRow = items => row('Friends Watching Now', items, { landscape: true }, null, 'friends-row');
+
+// Friends start and stop watching; check again every 30 seconds while the home page is up.
+function keepFriendsFresh(seq) {
+  const timer = setInterval(async () => {
+    if (stale(seq)) return void clearInterval(timer);
+    if (document.hidden || document.body.classList.contains('player-open')) return;
+    const items = await state.server.friendsWatching().catch(() => null);
+    if (!items || stale(seq)) return;
+    const rows = $('#app .rows');
+    const old = $('#app .friends-row');
+    const scroller = old && $('.row-scroller', old);
+    const left = scroller?.scrollLeft || 0;
+    const html = friendsRow(items);
+    if (old) old.outerHTML = html;
+    else if (html && rows) rows.insertAdjacentHTML('afterbegin', html);
+    const fresh = $('#app .friends-row .row-scroller');
+    if (fresh) fresh.scrollLeft = left;
+  }, 30000);
 }
 
 export async function library(seq, id, params = new URLSearchParams()) {
@@ -1134,6 +1180,7 @@ async function jellyfinManage(seq) {
   if (hidden.some(h => h.from.some(f => f.tag === 'dfhide-all'))) s.syncHidden().catch(() => {});
   if (stale(seq)) return;
   const savedLinks = store.get('jfShareLinks', {});
+  const together = JellyfinServer.togetherOn(users);
   const avatar = u => (u.PrimaryImageTag ? `<img src="${esc(s.image(`/Users/${u.Id}/Images/Primary?tag=${u.PrimaryImageTag}`, 88))}" alt="">` : esc(u.Name[0].toUpperCase()));
   const lastSeen = u => (u.LastActivityDate ? `last active ${when(Date.parse(u.LastActivityDate) / 1000)}` : 'never signed in');
 
@@ -1178,6 +1225,15 @@ async function jellyfinManage(seq) {
 
       <h2 class="group-title">Watching now</h2>
       ${nowPlayingHtml(sessions) || '<p class="muted">Nobody is watching right now.</p>'}
+
+      <h2 class="group-title">Watch together</h2>
+      <div class="together">
+        <p class="muted">${together
+          ? '<strong class="on-dot">On.</strong> Everyone sees what the others are watching in <strong>Friends Watching Now</strong> on the home page, and can join in: playback stays in sync (anyone can pause or skip) and there’s a chat beside the video.'
+          : 'Let everyone see what the others are watching (a <strong>Friends Watching Now</strong> row on the home page) and join in, with playback kept in sync and a chat beside the video.'}</p>
+        <p class="muted small-note">This uses Jellyfin’s “Allow remote control of other users” permission, so it also lets their Jellyfin apps pause or control each other’s playback. Share-link guests never get it.</p>
+        <button class="btn small ${together ? '' : 'accent'}" data-together="${together ? 'off' : 'on'}">${together ? 'Turn off' : 'Turn on for everyone'}</button>
+      </div>
 
       <h2 class="group-title">People with access</h2>
       ${others.length ? others.map((u, i) => `
@@ -1231,7 +1287,7 @@ async function jellyfinManage(seq) {
     button.disabled = true;
     button.textContent = 'Creating…';
     try {
-      await s.createUser(name, pass);
+      await s.createUser(name, pass, { together });
       const link = jellyfinLink(s, name);
       $('#invite-result').innerHTML = `
         <div class="invite-done">
@@ -1249,6 +1305,20 @@ async function jellyfinManage(seq) {
   });
 
   app().querySelector('.manage').addEventListener('click', async e => {
+    const tog = e.target.closest('[data-together]');
+    if (tog) {
+      tog.disabled = true;
+      tog.textContent = 'Saving…';
+      try {
+        await s.setTogether(tog.dataset.together === 'on');
+        toast(tog.dataset.together === 'on' ? 'Watch together is on.' : 'Watch together is off.');
+        refresh();
+      } catch (err) {
+        tog.disabled = false;
+        toast(`Couldn't change it: ${err.message}`);
+      }
+      return;
+    }
     const unhide = e.target.closest('[data-unhide]');
     if (unhide) {
       unhide.disabled = true;

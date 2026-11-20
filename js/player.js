@@ -1,5 +1,6 @@
 import { state } from './state.js';
 import { $, esc, store } from './util.js';
+import { attachParty, detachParty } from './party.js';
 
 const QUALITIES = [
   { id: 'original', label: 'Original quality' },
@@ -31,7 +32,8 @@ function defaultSubLanguage() {
 
 let ctx = null;
 
-export async function openPlayer(ratingKey, { fromStart = false } = {}) {
+// `at` (seconds) starts somewhere else than where you left off, e.g. where a friend is.
+export async function openPlayer(ratingKey, { fromStart = false, at = null } = {}) {
   if (ctx?.ratingKey === ratingKey) return;
   closePlayer();
 
@@ -65,6 +67,7 @@ export async function openPlayer(ratingKey, { fromStart = false } = {}) {
   $('.quality', root).value = c.quality;
   applySubSize(c);
   bindUi(c);
+  attachParty(c);
   setStatus(c, 'loading');
 
   try {
@@ -81,7 +84,7 @@ export async function openPlayer(ratingKey, { fromStart = false } = {}) {
     // Always available: even files without subtitles can find some online.
     $('[data-tracks]', root).hidden = false;
     renderTracks(c);
-    load(c, fromStart ? 0 : (item.viewOffset || 0) / 1000);
+    load(c, at ?? (fromStart ? 0 : (item.viewOffset || 0) / 1000));
     if (item.type === 'episode') findNext(c);
   } catch (err) {
     if (ctx === c) setStatus(c, 'error', err.message);
@@ -92,6 +95,7 @@ export function closePlayer() {
   const c = ctx;
   if (!c) return;
   ctx = null;
+  detachParty(c);
   report(c, 'stopped');
   c.started = false;
   c.loadId++;

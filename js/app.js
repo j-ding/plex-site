@@ -4,6 +4,7 @@ import * as views from './views.js';
 import { openPlayer, closePlayer } from './player.js';
 import { $, $$, sleep, store, debounce } from './util.js';
 import { setTrailersOn, trailersOn, toggleTrailerSound } from './trailers.js';
+import { startLive, join } from './party.js';
 
 function parseHash() {
   const raw = location.hash.replace(/^#/, '') || '/';
@@ -66,6 +67,7 @@ async function route() {
   // Share-link guests can only open their one title (and play it).
   if (state.server.guest && !/^\/(title|watch)\//.test(path)) return void location.replace(`#/title/${state.server.guest}`);
   views.renderHeader().catch(() => {});
+  startLive();
 
   // The player sits on top of whatever page is already rendered, so closing it
   // returns you exactly where you were.
@@ -77,7 +79,18 @@ async function route() {
       const seq = ++state.seq;
       run(() => views.home(seq), seq);
     }
-    return openPlayer(watch[1], { fromStart: params.has('start') });
+    // ?join= comes from a friend's card on the home page; ?at= from following them to the next episode.
+    let key = watch[1];
+    let at = params.has('at') ? Number(params.get('at')) : null;
+    if (params.has('join') || params.has('at')) history.replaceState(history.state, '', `#/watch/${key}`);
+    if (params.has('join')) {
+      const start = await join(params.get('join'));
+      if (start) {
+        if (String(start.key) !== String(key)) history.replaceState(history.state, '', `#/watch/${(key = start.key)}`);
+        at = start.at;
+      }
+    }
+    return openPlayer(key, { fromStart: params.has('start'), at });
   }
 
   closePlayer();

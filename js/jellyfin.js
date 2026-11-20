@@ -44,13 +44,13 @@ function authHeader(token) {
   return `MediaBrowser ${parts.join(', ')}`;
 }
 
-async function request(base, path, { method = 'GET', token, params, json, raw = false, timeout = 20000 } = {}) {
+async function request(base, path, { method = 'GET', token, params, json, raw = false, timeout = 20000, keepalive = false } = {}) {
   const url = new URL(base.replace(/\/+$/, '') + path);
   for (const [k, v] of Object.entries(params || {})) {
     if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
   }
   const headers = { Accept: 'application/json', Authorization: authHeader(token) };
-  const init = { method, headers, signal: AbortSignal.timeout(timeout) };
+  const init = { method, headers, signal: AbortSignal.timeout(timeout), keepalive };
   if (json !== undefined) {
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(json);
@@ -566,6 +566,85 @@ export class JellyfinServer {
     return this.api(path, { method: 'POST', json: body, raw: true });
   }
 
+  /* --- watching together ---
+     Jellyfin pushes messages to each DingFlix tab over a WebSocket. Parties use
+     Jellyfin's "display a message" command to talk between tabs, and the session
+     list to see what friends are watching. Both need Jellyfin's "Allow remote
+     control of other users" permission (Manage → Watch together). */
+
+  socketUrl() {
+    const u = new URL(`${this.uri}/socket`);
+    u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    u.searchParams.set('api_key', this.token);
+    u.searchParams.set('deviceId', clientId());
+    return u.toString();
+  }
+
+  // Tells Jellyfin this tab can receive messages. It offers nothing to play, so it
+  // doesn't show up as a "Play on" target in other Jellyfin apps.
+  announce() {
+    return this.api('/Sessions/Capabilities/Full', {
+      method: 'POST',
+      json: { PlayableMediaTypes: [], SupportedCommands: ['DisplayMessage'], SupportsMediaControl: true, SupportsPersistentIdentifier: false },
+      raw: true,
+    });
+  }
+
+  async mySessionId() {
+    const list = await this.api('/Sessions', { params: { deviceId: clientId() } });
+    return (list || []).find(x => x.UserId === this.userId)?.Id || null;
+  }
+
+  sendMessage(sessionId, data, { keepalive = false } = {}) {
+    return this.api(`/Sessions/${sessionId}/Message`, {
+      method: 'POST',
+      json: { Header: 'dingflix', Text: JSON.stringify(data), TimeoutMs: 1000 },
+      raw: true,
+      keepalive,
+      timeout: 8000,
+    });
+  }
+
+  // Other people's sessions that are playing something (only ones this account may reach).
+  async watchSessions() {
+    const list = await this.api('/Sessions', { params: { controllableByUserId: this.userId, activeWithinSeconds: 600 } });
+    return (list || []).filter(x => x.NowPlayingItem && x.UserId !== this.userId && !JellyfinServer.parseShareName(x.UserName));
+  }
+
+  // What friends are watching right now, as cards for the home page.
+  async friendsWatching() {
+    const live = await this.watchSessions();
+    if (!live.length) return [];
+    // Asking for the titles as this person leaves out anything hidden from them.
+    const r = await this.query({ Ids: [...new Set(live.map(x => x.NowPlayingItem.Id))].join(',') });
+    const items = new Map((r.Items || []).map(x => [x.Id, x]));
+    return live.filter(x => items.has(x.NowPlayingItem.Id)).map(x => ({
+      ...this.toItem(items.get(x.NowPlayingItem.Id)),
+      friend: {
+        name: x.UserName,
+        sessionId: x.Id,
+        dingflix: x.Client === CONFIG.appName,
+        paused: !!x.PlayState?.IsPaused,
+        position: ms(x.PlayState?.PositionTicks) || 0,
+      },
+    }));
+  }
+
+  // Watch together is on when everyone (other than admins, who can already) has the permission.
+  static togetherOn(users) {
+    const people = users.filter(u => !u.Policy?.IsAdministrator && !JellyfinServer.parseShareName(u.Name));
+    return people.length > 0 && people.every(u => u.Policy?.EnableRemoteControlOfOtherUsers);
+  }
+
+  async setTogether(on) {
+    const users = await this.users();
+    for (const u of users) {
+      if (JellyfinServer.parseShareName(u.Name)) continue;
+      if (u.Policy?.IsAdministrator && !on) continue; // admins keep it
+      if (!!u.Policy?.EnableRemoteControlOfOtherUsers !== on) await this.updatePolicy(u.Id, { EnableRemoteControlOfOtherUsers: on });
+    }
+  }
+
   /* --- online subtitles (needs Jellyfin's Open Subtitles plugin) --- */
 
   async searchSubtitles(itemId, language) {
@@ -620,9 +699,10 @@ export class JellyfinServer {
   users() { return this.api('/Users'); }
 
   // New accounts are shown on the "Who's watching?" screen and can see every library.
-  async createUser(name, password) {
+  // `together` also lets them watch along with everyone else (see Watch together below).
+  async createUser(name, password, { together = false } = {}) {
     const user = await this.api('/Users/New', { method: 'POST', json: { Name: name, Password: password || '' } });
-    await this.updatePolicy(user.Id, { IsHidden: false, EnableAllFolders: true, BlockedTags: ['dfhide-all'] });
+    await this.updatePolicy(user.Id, { IsHidden: false, EnableAllFolders: true, BlockedTags: ['dfhide-all'], EnableRemoteControlOfOtherUsers: together });
     return user;
   }
 
