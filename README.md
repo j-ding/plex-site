@@ -46,8 +46,15 @@ touches it.
   progress, Continue Watching and watched status (see below)
 - Refresh button (next to search) that has Plex check for new files and shows
   them right away. Only the server owner sees it.
+- Autoplay next: when the end credits start, a card offers the next episode
+  (or, for a movie, the next film in its collection, like a sequel) and plays it
+  after 10 seconds; **Watch credits** lets them run and asks again at the end.
+  Credits come from Plex's credit markers, Jellyfin's media segments (e.g. the
+  Intro Skipper plugin) or a "Credits" chapter; without them, episodes guess the
+  last 25 seconds and movies wait for the end. Sequels use TMDb collections
+  (Jellyfin). Switch it off in the account menu.
 - Player: resumes where you left off, syncs progress to Plex, quality picker,
-  next-episode button with an autoplay countdown, and keyboard shortcuts
+  next-episode button, and keyboard shortcuts
   (space/k = pause, ←/→ = 10s skip, f = fullscreen, Esc = back)
 - Audio & subtitle menu (the speech-bubble button): switch between any audio
   track or subtitle track in the file, or turn subtitles off, and pick a subtitle

@@ -304,6 +304,9 @@ const clock = s => {
 
 /* ---------- the player hooks ---------- */
 
+// 'host', 'guest' or null. Guests don't move on by themselves; the host takes them along.
+export const partyRole = () => party?.role || null;
+
 export function attachParty(c) {
   player = c;
   clearTimeout(leaveTimer);

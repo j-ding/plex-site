@@ -5,6 +5,7 @@ import { jellyfinAuth, shareCode, JellyfinServer } from './jellyfin.js';
 import { rowItems } from './categories.js';
 import { esc, $, $$, store, duration, debounce } from './util.js';
 import { heroTrailer, initPreviews, canPreview, trailersOn } from './trailers.js';
+import { autoplayOn } from './player.js';
 import { holyarrsAddress, setHolyarrsAddress, forgetHolyarrs, holyarrsLink, holyarrsSearch, holyarrsTitle, holyarrsUp, linkAttrs, DEFAULT_ADDRESS } from './holyarrs.js';
 
 const VIDEO_TYPES = new Set(['movie', 'show', 'season', 'episode']);
@@ -74,6 +75,7 @@ export async function renderHeader() {
           </div>
           ${state.userToken || jellyfin ? `<a href="#/profiles">Switch profile</a>` : ''}
           <a href="#/connect?pick=1">Switch server</a>
+          <button data-action="toggle-autoplay">${autoplayMenuLabel()}</button>
           ${canPreview() ? `<button data-action="toggle-trailers">${trailerMenuLabel()}</button>` : ''}
           <button data-action="signout">Sign out</button>
         </div>
@@ -116,6 +118,7 @@ export async function renderHeader() {
   updateNav();
 }
 
+export const autoplayMenuLabel = () => `Autoplay next episode: ${autoplayOn() ? 'on' : 'off'}`;
 export const trailerMenuLabel = () => `Trailer previews: ${trailersOn() ? 'on' : 'off'}`;
 
 export function updateNav() {

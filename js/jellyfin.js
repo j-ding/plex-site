@@ -209,6 +209,7 @@ export class JellyfinServer {
       releasedAt: i.PremiereDate ? Date.parse(i.PremiereDate) / 1000 : undefined,
       // Only single-title lookups ask for these.
       trailers: (i.RemoteTrailers || []).map(t => t.Url),
+      chapters: (i.Chapters || []).map(c => ({ name: c.Name || '', start: ms(c.StartPositionTicks) || 0 })),
       Guid: Object.entries(i.ProviderIds || {}).map(([k, v]) => ({ id: `${k.toLowerCase()}://${v}` })),
     };
     if (type === 'season') {
@@ -421,7 +422,7 @@ export class JellyfinServer {
   }
 
   async metadata(id) {
-    const item = await this.api(`/Items/${id}`, { params: { userId: this.userId, Fields: `${ITEM_FIELDS},RemoteTrailers,ProviderIds,Tags` } }).catch(err => {
+    const item = await this.api(`/Items/${id}`, { params: { userId: this.userId, Fields: `${ITEM_FIELDS},RemoteTrailers,ProviderIds,Tags,Chapters` } }).catch(err => {
       if (err.status === 404) throw new Error('That title is no longer on the server.');
       throw err;
     });
@@ -448,6 +449,32 @@ export class JellyfinServer {
   async allLeaves(seriesId) {
     const r = await this.api(`/Shows/${seriesId}/Episodes`, { params: { userId: this.userId, Fields: ITEM_FIELDS } });
     return (r.Items || []).map(x => this.toItem(x));
+  }
+
+  /* --- what plays next --- */
+
+  // When the end credits start (ms): Jellyfin's media segments (from a plugin such
+  // as Intro Skipper), else a chapter called "Credits" or similar in the second half.
+  async creditsStart(item) {
+    const r = await this.api(`/MediaSegments/${item.ratingKey}`, { params: { includeSegmentTypes: 'Outro' } }).catch(() => null);
+    const outro = (r?.Items || []).map(x => ms(x.StartTicks)).filter(Boolean).sort((a, b) => a - b)[0];
+    if (outro) return outro;
+    const half = (item.duration || 0) / 2;
+    return (item.chapters || []).find(c => c.start > half && /credits|outro|ending/i.test(c.name))?.start ?? null;
+  }
+
+  // The next film in the same collection (TMDb's, e.g. "The Matrix Collection"), by release date.
+  async sequel(item) {
+    const coll = item.Guid?.find(g => g.id.startsWith('tmdbcollection://'))?.id.slice('tmdbcollection://'.length);
+    if (!coll) return null;
+    if (!this.movieIds || Date.now() - this.movieIds.at > 10 * 60 * 1000) {
+      const r = await this.query({ IncludeItemTypes: 'Movie', Recursive: true, Fields: 'ProviderIds,PremiereDate', EnableUserData: false, EnableImages: false });
+      this.movieIds = { at: Date.now(), items: r.Items || [] };
+    }
+    const released = m => (m.PremiereDate ? Date.parse(m.PremiereDate) : m.ProductionYear ? Date.UTC(m.ProductionYear, 0) : Infinity);
+    const films = this.movieIds.items.filter(m => m.ProviderIds?.TmdbCollection === coll).sort((a, b) => released(a) - released(b));
+    const i = films.findIndex(m => m.Id === item.ratingKey);
+    return i >= 0 && films[i + 1] ? this.metadata(films[i + 1].Id) : null;
   }
 
   scrobble(id) { return this.api(`/UserPlayedItems/${id}`, { method: 'POST', params: { userId: this.userId } }); }

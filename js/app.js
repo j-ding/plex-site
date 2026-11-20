@@ -1,7 +1,7 @@
 import { state, setServer, setUserToken, setProfile, signOut, viewerToken } from './state.js';
 import { auth, connect } from './plex.js';
 import * as views from './views.js';
-import { openPlayer, closePlayer } from './player.js';
+import { openPlayer, closePlayer, autoplayOn, setAutoplay } from './player.js';
 import { $, $$, sleep, store, debounce } from './util.js';
 import { setTrailersOn, trailersOn, toggleTrailerSound } from './trailers.js';
 import { startLive, join } from './party.js';
@@ -314,6 +314,10 @@ document.addEventListener('click', async e => {
     case 'toggle-trailers':
       setTrailersOn(!trailersOn());
       action.textContent = views.trailerMenuLabel();
+      break;
+    case 'toggle-autoplay':
+      setAutoplay(!autoplayOn());
+      action.textContent = views.autoplayMenuLabel();
       break;
     case 'trailer-sound':
       toggleTrailerSound();

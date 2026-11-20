@@ -1,6 +1,6 @@
 import { state } from './state.js';
 import { $, esc, store } from './util.js';
-import { attachParty, detachParty } from './party.js';
+import { attachParty, detachParty, partyRole } from './party.js';
 
 const QUALITIES = [
   { id: 'original', label: 'Original quality' },
@@ -22,6 +22,12 @@ const SUB_LANGUAGES = [
   ['tr', 'Turkish'], ['ar', 'Arabic'], ['he', 'Hebrew'], ['hi', 'Hindi'], ['ja', 'Japanese'],
   ['ko', 'Korean'], ['zh', 'Chinese'], ['vi', 'Vietnamese'], ['th', 'Thai'], ['id', 'Indonesian'],
 ];
+
+// Autoplay: when the credits start, count down 10 seconds and play what's next.
+export const autoplayOn = () => store.get('autoplay', true) !== false;
+export const setAutoplay = on => store.set('autoplay', !!on);
+const COUNTDOWN = 10;
+const GUESS_CREDITS = 25; // seconds before the end, for episodes with no credits data
 
 function defaultSubLanguage() {
   const saved = store.get('subLang');
@@ -85,7 +91,7 @@ export async function openPlayer(ratingKey, { fromStart = false, at = null } = {
     $('[data-tracks]', root).hidden = false;
     renderTracks(c);
     load(c, at ?? (fromStart ? 0 : (item.viewOffset || 0) / 1000));
-    if (item.type === 'episode') findNext(c);
+    findNext(c);
   } catch (err) {
     if (ctx === c) setStatus(c, 'error', err.message);
   }
@@ -468,7 +474,18 @@ function bindUi(c) {
   video.addEventListener('ended', () => {
     report(c, 'stopped');
     state.server.scrobble(c.ratingKey).catch(() => {});
-    if (c.next) upNext(c);
+    if (c.next && c.upnext !== 'credits') upNext(c);
+  });
+  video.addEventListener('timeupdate', () => {
+    const start = creditsStart(c);
+    if (!c.next || !c.started || start == null) return;
+    const t = video.currentTime;
+    if (t >= start && !c.upnext && !c.watchingCredits) upNext(c, { credits: true });
+    else if (t < start - 2) {
+      // Went back to before the credits: put things back as they were.
+      c.watchingCredits = false;
+      if (c.upnext === 'credits') hideUpNext(c);
+    }
   });
   video.addEventListener('error', () => {
     if (c.mode === 'direct') {
@@ -513,29 +530,56 @@ function bindUi(c) {
   document.addEventListener('keydown', c.onKey);
 }
 
+// The next episode, or for a movie the next film in its collection (sequels), and
+// when this one's end credits start.
 async function findNext(c) {
+  const s = state.server;
   try {
-    const episodes = await state.server.allLeaves(c.item.grandparentRatingKey);
-    const i = episodes.findIndex(e => String(e.ratingKey) === String(c.ratingKey));
-    if (ctx !== c || i < 0 || !episodes[i + 1]) return;
-    c.next = episodes[i + 1];
-    $('[data-next]', c.root).hidden = false;
+    let next = null;
+    if (c.item.type === 'episode') {
+      const episodes = await s.allLeaves(c.item.grandparentRatingKey);
+      const i = episodes.findIndex(e => String(e.ratingKey) === String(c.ratingKey));
+      next = i >= 0 ? episodes[i + 1] : null;
+    } else if (c.item.type === 'movie' && s.sequel) {
+      next = await s.sequel(c.item);
+    }
+    if (ctx !== c || !next) return;
+    c.next = next;
+    const button = $('[data-next]', c.root);
+    button.textContent = next.type === 'episode' ? 'Next episode ›' : 'Next movie ›';
+    button.hidden = false;
+    const credits = c.item.creditsAt ?? (await s.creditsStart?.(c.item).catch(() => null));
+    if (ctx === c && credits) c.creditsAt = credits / 1000;
   } catch {}
 }
 
-function upNext(c) {
+// Seconds into the video where the credits start. Without credits data, episodes
+// guess the last 25 seconds; movies wait for the end (their credits vary too much).
+function creditsStart(c) {
+  if (c.creditsAt) return c.creditsAt;
+  const d = c.video.duration;
+  return c.item?.type === 'episode' && d > 600 ? d - GUESS_CREDITS : null;
+}
+
+function upNext(c, { credits = false } = {}) {
+  if (partyRole() === 'guest') return; // the host's player decides, and takes everyone along
   const n = c.next;
   const box = $('.upnext', c.root);
-  let left = 10;
+  const auto = autoplayOn();
+  let left = COUNTDOWN;
+  clearInterval(c.countdown);
+  c.upnext = credits ? 'credits' : 'ended';
+  const kind = n.type === 'episode' ? `Next episode · S${esc(n.parentIndex)}:E${esc(n.index)}` : `Next movie${n.year ? ` · ${esc(n.year)}` : ''}`;
+  const pic = n.type === 'episode' ? n.thumb : n.art || n.thumb;
   const paint = () => {
     box.innerHTML = `
-      ${n.thumb ? `<img src="${esc(state.server.image(n.thumb, 320, 180))}" alt="">` : ''}
+      ${pic ? `<img src="${esc(state.server.image(pic, 320, 180))}" alt="">` : ''}
       <div>
-        <small>Up next · S${esc(n.parentIndex)}:E${esc(n.index)}</small>
+        <small>${kind}</small>
         <strong>${esc(n.title)}</strong>
         <div class="actions">
-          <button class="btn primary small" data-go>Play now (${left})</button>
-          <button class="btn small" data-cancel>Cancel</button>
+          <button class="btn primary small" data-go>▶ ${auto ? `Playing in ${left}` : 'Play now'}</button>
+          <button class="btn small" data-cancel>${credits ? 'Watch credits' : 'Cancel'}</button>
         </div>
       </div>`;
   };
@@ -544,16 +588,25 @@ function upNext(c) {
   box.onclick = e => {
     if (e.target.closest('[data-go]')) goTo(n.ratingKey);
     if (e.target.closest('[data-cancel]')) {
-      clearInterval(c.countdown);
-      box.hidden = true;
+      hideUpNext(c);
+      if (credits) c.watchingCredits = true; // ask again when they end
     }
   };
+  if (!auto) return;
   c.countdown = setInterval(() => {
+    if (c.video.paused && !c.video.ended) return; // paused: wait for them
     if (--left <= 0) {
       clearInterval(c.countdown);
       goTo(n.ratingKey);
     } else paint();
   }, 1000);
+}
+
+function hideUpNext(c) {
+  clearInterval(c.countdown);
+  c.upnext = null;
+  const box = $('.upnext', c.root);
+  if (box) box.hidden = true;
 }
 
 // Swap to another episode without adding a history entry, so Back still exits the player.

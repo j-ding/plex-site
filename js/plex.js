@@ -376,8 +376,11 @@ export class PlexServer {
   async search(query) { return (await this.get('/hubs/search', { query, limit: 30 })).Hub ?? []; }
 
   async metadata(id) {
-    const item = (await this.get(`/library/metadata/${id}`, { includeGuids: 1 })).Metadata?.[0];
+    const item = (await this.get(`/library/metadata/${id}`, { includeGuids: 1, includeMarkers: 1 })).Metadata?.[0];
     if (!item) throw new Error('That title is no longer on the server.');
+    // Plex detects end credits (Plex Pass); the player uses this for "up next".
+    const credits = (item.Marker || []).filter(m => m.type === 'credits').map(m => m.startTimeOffset).sort((a, b) => a - b)[0];
+    if (credits) item.creditsAt = credits;
     return item;
   }
 
