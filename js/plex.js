@@ -376,7 +376,7 @@ export class PlexServer {
   async search(query) { return (await this.get('/hubs/search', { query, limit: 30 })).Hub ?? []; }
 
   async metadata(id) {
-    const item = (await this.get(`/library/metadata/${id}`)).Metadata?.[0];
+    const item = (await this.get(`/library/metadata/${id}`, { includeGuids: 1 })).Metadata?.[0];
     if (!item) throw new Error('That title is no longer on the server.');
     return item;
   }

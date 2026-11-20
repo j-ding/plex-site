@@ -4,6 +4,8 @@ import { auth, connect, PlexServer } from './plex.js';
 import { jellyfinAuth, shareCode } from './jellyfin.js';
 import { rowItems } from './categories.js';
 import { esc, $, $$, store, duration, debounce } from './util.js';
+import { heroTrailer, initPreviews, canPreview, trailersOn } from './trailers.js';
+import { holyarrsAddress, setHolyarrsAddress, forgetHolyarrs, holyarrsLink, holyarrsSearch, holyarrsTitle, holyarrsUp, linkAttrs, DEFAULT_ADDRESS } from './holyarrs.js';
 
 const VIDEO_TYPES = new Set(['movie', 'show', 'season', 'episode']);
 const SORTS = [
@@ -72,6 +74,7 @@ export async function renderHeader() {
           </div>
           ${state.userToken || jellyfin ? `<a href="#/profiles">Switch profile</a>` : ''}
           <a href="#/connect?pick=1">Switch server</a>
+          ${canPreview() ? `<button data-action="toggle-trailers">${trailerMenuLabel()}</button>` : ''}
           <button data-action="signout">Sign out</button>
         </div>
       </div>
@@ -99,9 +102,13 @@ export async function renderHeader() {
     const sections = await getSections();
     $('#nav').insertAdjacentHTML('beforeend', sections.map(s => `<a href="#/library/${esc(s.key)}">${esc(s.title)}</a>`).join(''));
   } catch {}
-  if (await isAdmin().catch(() => false)) $('#nav').insertAdjacentHTML('beforeend', `<a href="#/manage" class="nav-admin">Manage</a>`);
+  if (await isAdmin().catch(() => false)) {
+    $('#nav').insertAdjacentHTML('beforeend', `<a href="#/holyarrs" class="nav-admin">HolyArrs</a><a href="#/manage" class="nav-admin">Manage</a>`);
+  }
   updateNav();
 }
+
+export const trailerMenuLabel = () => `Trailer previews: ${trailersOn() ? 'on' : 'off'}`;
 
 export function updateNav() {
   const path = (location.hash || '#/').split('?')[0];
@@ -160,8 +167,10 @@ function card(item, { landscape = false, resume = false } = {}) {
   const pct = item.viewOffset && item.duration ? Math.min(100, (item.viewOffset / item.duration) * 100) : 0;
   const unwatched = item.type === 'show' && item.leafCount ? item.leafCount - (item.viewedLeafCount || 0) : 0;
   const watched = item.type === 'movie' && item.viewCount && !item.viewOffset;
+  // Movies and shows get a trailer pop-out when the mouse rests on them.
+  const previewable = !resume && (item.type === 'movie' || item.type === 'show');
   return `
-    <a class="card ${landscape ? 'landscape' : 'poster'}" href="${esc(info.href)}" title="${esc(info.title)}">
+    <a class="card ${landscape ? 'landscape' : 'poster'}" href="${esc(info.href)}" title="${esc(info.title)}"${previewable ? ` data-id="${esc(item.ratingKey)}"` : ''}>
       <div class="card-img">
         <span class="card-fallback">${esc(info.title)}</span>
         ${src ? `<img loading="lazy" src="${esc(src)}" alt="" onerror="this.remove()">` : ''}
@@ -209,6 +218,8 @@ function metaLine(item) {
   if (score) parts.push(`★ ${Number(score).toFixed(1)}`);
   return parts.join('<span class="sep">·</span>');
 }
+
+initPreviews({ meta: metaLine, img });
 
 function titleArt(item) {
   const logo = item.Image?.find(i => i.type === 'clearLogo')?.url;
@@ -260,9 +271,9 @@ export async function home(seq) {
     .filter(m => m.art && m.summary);
   const pick = heroPool[Math.floor(Math.random() * heroPool.length)];
   const rows = row('Continue Watching', deck, { landscape: true, resume: true }) + hubRows(hubs);
-  mount(seq, rows
+  if (mount(seq, rows
     ? `${hero(pick)}<div class="rows ${pick ? 'under-hero' : 'page-top'}">${rows}</div>`
-    : `<div class="page-top pad empty"><h2>Nothing here yet</h2><p class="muted">Add some movies or shows to your Plex libraries and they'll show up here.</p></div>`);
+    : `<div class="page-top pad empty"><h2>Nothing here yet</h2><p class="muted">Add some movies or shows to your Plex libraries and they'll show up here.</p></div>`)) heroTrailer($('.hero'), pick?.ratingKey);
 }
 
 export async function library(seq, id, params = new URLSearchParams()) {
@@ -434,6 +445,9 @@ export async function title(seq, id, params) {
   const tags = (list, n) => (list || []).slice(0, n).map(t => esc(t.tag)).join(', ');
   const fact = (label, value) => (value ? `<p>${label}: <span>${value}</span></p>` : '');
   const current = params.get('season') || (seasons.find(x => (x.viewedLeafCount || 0) < x.leafCount) || seasons[0])?.ratingKey;
+  // The owner can jump to HolyArrs for this title (missing seasons, a better copy, subtitles).
+  const findMore = holyarrsAddress() && (await isAdmin().catch(() => false)) ? holyarrsTitle(item) : null;
+  if (stale(seq)) return;
 
   if (!mount(seq, `
     <section class="hero title-hero">
@@ -448,6 +462,7 @@ export async function title(seq, id, params) {
           <button class="btn" data-action="toggle-watched" data-key="${esc(id)}" data-watched="${watched ? 1 : 0}">${watched ? '✓ Watched' : 'Mark as watched'}</button>
           ${state.server.kind === 'jellyfin' && state.server.admin && !state.server.guest
             ? `<button class="btn" data-action="share" data-key="${esc(id)}" data-title="${esc(item.title)}">↗ Share</button>` : ''}
+          ${findMore ? `<a class="btn" href="${esc(findMore)}" ${linkAttrs} title="Open this ${isShow ? 'show' : 'movie'} in HolyArrs">HolyArrs ↗</a>` : ''}
         </div>
         ${resume ? `<div class="resume"><div class="progress"><span style="width:${((resume / item.duration) * 100).toFixed(1)}%"></span></div><small>${duration(item.duration - resume)} left</small></div>` : ''}
       </div>
@@ -472,6 +487,7 @@ export async function title(seq, id, params) {
         <div id="episodes"></div>
       </section>` : ''}
     <div class="rows">${hubRows(related)}</div>`)) return;
+  heroTrailer($('.title-hero'), id);
 
   if (isShow && seasons.length) {
     const select = $('#season');
@@ -527,6 +543,90 @@ export async function search(seq, q) {
           <div class="grid ${landscape ? 'landscape' : ''}">${h.Metadata.map(m => card(m, { landscape })).join('')}</div>`;
       }).join('')
     : `<p class="muted">No results for “${esc(q)}”.</p>`;
+  // The owner can go looking for it in HolyArrs.
+  if (holyarrsAddress() && (await isAdmin().catch(() => false)) && !stale(seq)) {
+    $('#results').insertAdjacentHTML('beforeend', `
+      <p class="holyarrs-hint">${groups.length ? 'Not what you wanted?' : 'Not in your library yet?'}
+        <a href="${esc(holyarrsSearch(q))}" ${linkAttrs}>Find “${esc(q)}” in HolyArrs ↗</a></p>`);
+  }
+}
+
+/* ---------- owner: HolyArrs, to find and download more ---------- */
+
+const HOLYARRS_PAGES = [
+  ['/explore', 'Explore', "What's trending and new, with trailers. Ask for anything and it's downloaded."],
+  ['/requests', 'Requests', 'What you and others have asked for, and what still needs approving.'],
+  ['/downloads', 'Downloads', 'Everything downloading right now.'],
+  ['/calendar', 'Calendar', "New episodes and movie releases for what you follow."],
+];
+
+// Redraws the page without "?change=1" (replacing the same hash wouldn't fire a route).
+function reopenHolyarrs(seq) {
+  if (location.hash !== '#/holyarrs') return void location.replace('#/holyarrs');
+  holyarrsView(seq).catch(errorView);
+}
+
+export async function holyarrsView(seq, params = new URLSearchParams()) {
+  pageTitle('HolyArrs');
+  if (!(await isAdmin())) throw new Error('Only the owner of this server can add to the library.');
+  const address = params.has('change') ? null : holyarrsAddress();
+
+  if (!address) {
+    if (!mount(seq, `
+      <div class="page-top pad holyarrs">
+        <h1 class="page-title">HolyArrs</h1>
+        <p class="muted holyarrs-lead">HolyArrs finds movies and shows, downloads them and files them into your library, where DingFlix picks them up. It runs on your server alongside ${state.server.kind === 'jellyfin' ? 'Jellyfin' : 'Plex'}.</p>
+        <h2 class="group-title">Where is it running?</h2>
+        <form class="invite-form" id="holyarrs-form">
+          <input name="address" type="text" autocomplete="off" value="${esc(holyarrsAddress() || DEFAULT_ADDRESS)}" required aria-label="HolyArrs address">
+          <button class="btn accent">Connect</button>
+        </form>
+        <p class="muted invite-note">Its address, as you'd open it in your browser. On the computer it runs on that's usually <strong>${DEFAULT_ADDRESS}</strong>. This is saved on this device only.</p>
+        <p class="muted invite-note">Not installed yet? It runs in Docker: see <a class="text-link" href="https://holyarrs.com" target="_blank" rel="noopener">holyarrs.com</a>.</p>
+      </div>`)) return;
+    $('#holyarrs-form').addEventListener('submit', e => {
+      e.preventDefault();
+      if (!setHolyarrsAddress(e.target.address.value.trim())) return void toast("That doesn't look like an address.");
+      reopenHolyarrs(seq);
+    });
+    return;
+  }
+
+  if (!mount(seq, `
+    <div class="page-top pad holyarrs">
+      <h1 class="page-title">HolyArrs</h1>
+      <p class="holyarrs-status" id="holyarrs-status"><span class="dot"></span> Checking <strong>${esc(address)}</strong>…</p>
+      <form class="holyarrs-search" id="holyarrs-search">
+        <input name="q" type="search" autocomplete="off" placeholder="Find a movie or show to add" required aria-label="Find a movie or show">
+        <button class="btn accent">Search</button>
+      </form>
+      <div class="holyarrs-tiles">
+        ${HOLYARRS_PAGES.map(([path, name, text]) => `
+          <a class="holyarrs-tile" href="${esc(holyarrsLink(path))}" ${linkAttrs}>
+            <strong>${esc(name)} ↗</strong>
+            <span class="muted">${esc(text)}</span>
+          </a>`).join('')}
+      </div>
+      <p class="muted invite-note">HolyArrs opens in its own tab. When something finishes downloading, ${state.server.kind === 'jellyfin' ? 'Jellyfin' : 'Plex'} adds it on its next scan, or press <strong>⟳</strong> at the top to check now.</p>
+      <p class="muted invite-note"><a class="text-link" href="#/holyarrs?change=1">Change address</a> · <button class="link" data-forget-holyarrs>Disconnect</button></p>
+    </div>`)) return;
+
+  $('#holyarrs-search').addEventListener('submit', e => {
+    e.preventDefault();
+    window.open(holyarrsSearch(e.target.q.value.trim()), 'holyarrs', 'noopener');
+  });
+  $('[data-forget-holyarrs]').addEventListener('click', () => {
+    forgetHolyarrs();
+    reopenHolyarrs(seq);
+  });
+
+  const up = await holyarrsUp(address);
+  const status = $('#holyarrs-status');
+  if (stale(seq) || !status) return;
+  status.classList.add(up ? 'up' : 'down');
+  status.innerHTML = up
+    ? `<span class="dot"></span> Running at <strong>${esc(address)}</strong>`
+    : `<span class="dot"></span> Couldn't reach <strong>${esc(address)}</strong>. Is it running? The links below still work if you can open it in this browser.`;
 }
 
 /* ---------- owner: who has access ---------- */

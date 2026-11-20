@@ -2,6 +2,7 @@ import { CONFIG } from './config.js';
 import { store } from './util.js';
 import { clientId, browser } from './plex.js';
 import { buildCategories, featuredOrder, rowItems } from './categories.js';
+import { youTubeKey } from './trailers.js';
 
 // Jellyfin talks in 100-nanosecond "ticks"; DingFlix uses milliseconds like Plex.
 const TICKS_PER_MS = 10000;
@@ -202,6 +203,9 @@ export class JellyfinServer {
       keywords: i.Tags || [],
       addedAt: i.DateCreated ? Date.parse(i.DateCreated) / 1000 : undefined,
       releasedAt: i.PremiereDate ? Date.parse(i.PremiereDate) / 1000 : undefined,
+      // Only single-title lookups ask for these.
+      trailers: (i.RemoteTrailers || []).map(t => t.Url),
+      Guid: Object.entries(i.ProviderIds || {}).map(([k, v]) => ({ id: `${k.toLowerCase()}://${v}` })),
     };
     if (type === 'season') {
       Object.assign(item, { parentRatingKey: i.SeriesId || i.ParentId, parentTitle: i.SeriesName, parentThumb: seriesPoster });
@@ -413,11 +417,23 @@ export class JellyfinServer {
   }
 
   async metadata(id) {
-    const item = await this.api(`/Items/${id}`, { params: { userId: this.userId, Fields: ITEM_FIELDS } }).catch(err => {
+    const item = await this.api(`/Items/${id}`, { params: { userId: this.userId, Fields: `${ITEM_FIELDS},RemoteTrailers,ProviderIds` } }).catch(err => {
       if (err.status === 404) throw new Error('That title is no longer on the server.');
       throw err;
     });
     return this.toItem(item);
+  }
+
+  // The title plus the YouTube id of its trailer (null if it has none), for previews.
+  trailer(id) {
+    this.trailers ??= new Map();
+    if (!this.trailers.has(id)) {
+      this.trailers.set(id, this.metadata(id).then(item => ({ item, key: youTubeKey(item.trailers) })).catch(() => {
+        this.trailers.delete(id);
+        return { key: null };
+      }));
+    }
+    return this.trailers.get(id);
   }
 
   async children(id) {

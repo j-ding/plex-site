@@ -834,3 +834,120 @@ a.server { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation-duration: 0s !important; }
 }
+
+/* ---------- trailer previews ---------- */
+
+/* The frame is taller than the box: YouTube's title bar sits in the cropped letterbox. */
+.trailer {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  container-type: size;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .8s;
+}
+.trailer.playing { opacity: 1; }
+.trailer iframe {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: max(100cqw, 177.78cqh);
+  height: calc(max(56.25cqw, 100cqh) + 140px);
+  transform: translate(-50%, -50%);
+  border: 0;
+}
+.trailer-sound {
+  position: absolute;
+  z-index: 2;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, .6);
+  background: rgba(12, 12, 16, .45);
+  font-size: 17px;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .4s;
+}
+.trailer.playing ~ .trailer-sound, .preview:has(.trailer.playing) .trailer-sound { opacity: 1; pointer-events: auto; }
+.trailer-sound:hover { background: rgba(255, 255, 255, .2); }
+.hero > .trailer-sound { right: var(--gutter); bottom: clamp(120px, 14vw, 220px); }
+.title-hero > .trailer-sound { bottom: 48px; }
+
+.preview {
+  position: absolute;
+  z-index: 40;
+  background: var(--bg-2);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .75);
+  animation: preview-in .18s ease-out;
+}
+@keyframes preview-in { from { transform: scale(.7); opacity: 0; } }
+.preview-media {
+  position: relative;
+  display: block;
+  isolation: isolate;
+  aspect-ratio: 16 / 9;
+  background: var(--bg-3);
+}
+.preview-media img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: -2; }
+.preview-link { position: absolute; inset: 0; z-index: 1; }
+.preview .trailer-sound { right: 10px; bottom: 10px; width: 34px; height: 34px; font-size: 15px; }
+.preview-body { padding: 10px 14px 14px; }
+.preview-actions { display: flex; gap: 8px; margin-bottom: 8px; }
+.round {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, .5);
+  background: rgba(36, 36, 46, .8);
+  font-size: 15px;
+  cursor: pointer;
+}
+.round:hover { border-color: #fff; }
+.round.light { background: #fff; color: #000; border-color: #fff; }
+.round.light:hover { background: rgba(255, 255, 255, .8); }
+.preview-title { font-weight: 650; margin-bottom: 4px; }
+.preview .meta { font-size: 13px; gap: 6px; }
+.preview-genres { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; font-size: 13px; color: #d0d0d9; }
+
+/* ---------- HolyArrs (owner only) ---------- */
+
+.holyarrs { max-width: 960px; padding-bottom: 60px; }
+.holyarrs-lead { max-width: 640px; margin: 8px 0 0; }
+.text-link { color: var(--accent); text-decoration: underline; }
+.holyarrs-status { margin: 10px 0 22px; color: var(--muted); }
+.holyarrs-status .dot { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%; background: #555; }
+.holyarrs-status.up .dot { background: #3ddc84; }
+.holyarrs-status.down .dot { background: var(--danger); }
+.holyarrs-search { display: flex; gap: 8px; max-width: 620px; }
+.holyarrs-search input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-2);
+  border: 1px solid var(--bg-3);
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+.holyarrs-search input:focus { outline: none; border-color: var(--accent); }
+.holyarrs-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; margin: 24px 0 18px; }
+.holyarrs-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  background: var(--bg-2);
+  border: 1px solid var(--bg-3);
+  border-radius: 8px;
+  transition: border-color .15s;
+}
+.holyarrs-tile:hover { border-color: var(--accent); }
+.holyarrs-tile .muted { font-size: 14px; }
+.holyarrs-hint { margin: 28px 0 0; color: var(--muted); }
+.holyarrs-hint a { color: var(--accent); }

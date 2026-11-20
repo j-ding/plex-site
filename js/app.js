@@ -2,7 +2,8 @@ import { state, setServer, setUserToken, setProfile, signOut, viewerToken } from
 import { auth, connect } from './plex.js';
 import * as views from './views.js';
 import { openPlayer, closePlayer } from './player.js';
-import { $, sleep, store } from './util.js';
+import { $, $$, sleep, store, debounce } from './util.js';
+import { setTrailersOn, trailersOn, toggleTrailerSound } from './trailers.js';
 
 function parseHash() {
   const raw = location.hash.replace(/^#/, '') || '/';
@@ -70,15 +71,46 @@ async function route() {
   if (raw === state.rendered) return;
   state.rendered = raw;
   const seq = ++state.seq;
+  // Back and forward land on an entry that remembers where you were on it.
+  const place = history.state?.place?.raw === raw ? history.state.place : null;
   if (path !== '/search') window.scrollTo(0, 0);
 
-  let m;
-  if (path === '/') return run(() => views.home(seq), seq);
-  if ((m = path.match(/^\/library\/(\w+)$/))) return run(() => views.library(seq, m[1], params), seq);
-  if ((m = path.match(/^\/title\/([\w-]+)$/))) return run(() => views.title(seq, m[1], params), seq);
-  if (path === '/search') return run(() => views.search(seq, params.get('q') || ''), seq);
-  if (path === '/manage') return run(() => views.manage(seq), seq);
-  location.replace('#/');
+  let m, render;
+  if (path === '/') render = () => views.home(seq);
+  else if ((m = path.match(/^\/library\/(\w+)$/))) render = () => views.library(seq, m[1], params);
+  else if ((m = path.match(/^\/title\/([\w-]+)$/))) render = () => views.title(seq, m[1], params);
+  else if (path === '/search') render = () => views.search(seq, params.get('q') || '');
+  else if (path === '/manage') render = () => views.manage(seq);
+  else if (path === '/holyarrs') render = () => views.holyarrsView(seq, params);
+  else return void location.replace('#/');
+  drawing = true;
+  await run(render, seq);
+  if (place) await restorePlace(place, seq);
+  if (seq === state.seq) drawing = false;
+}
+
+// Keeps the page's scroll and each row's sideways scroll in the history entry, so
+// going back puts you where you were.
+history.scrollRestoration = 'manual';
+let drawing = false; // a page is still loading, or being put back where it was
+const savePlace = debounce(() => {
+  const raw = location.hash.replace(/^#/, '') || '/';
+  if (drawing || raw !== state.rendered) return; // the player is open, or a page is still loading
+  const rows = {};
+  $$('#app .row-scroller').forEach((r, i) => { if (r.scrollLeft) rows[i] = Math.round(r.scrollLeft); });
+  history.replaceState({ ...history.state, place: { raw, y: Math.round(scrollY), rows } }, '');
+}, 200);
+window.addEventListener('scroll', savePlace, { passive: true, capture: true });
+
+// Rows and grids can still be filling in, so keep trying for a couple of seconds.
+async function restorePlace({ y, rows }, seq) {
+  for (let i = 0; i < 25 && seq === state.seq; i++) {
+    $$('#app .row-scroller').forEach((r, n) => { if (rows[n]) r.scrollLeft = rows[n]; });
+    const room = document.documentElement.scrollHeight - innerHeight;
+    window.scrollTo(0, Math.min(y, room));
+    if (room >= y) return;
+    await sleep(100);
+  }
 }
 
 async function run(render, seq) {
@@ -242,6 +274,13 @@ document.addEventListener('click', async e => {
       break;
     case 'scan':
       scanLibraries(action);
+      break;
+    case 'toggle-trailers':
+      setTrailersOn(!trailersOn());
+      action.textContent = views.trailerMenuLabel();
+      break;
+    case 'trailer-sound':
+      toggleTrailerSound();
       break;
     case 'retry':
       retried = false;

@@ -15,6 +15,11 @@ touches it.
 - Home page with a featured banner, Continue Watching, and Recently Added rows
 - One page per library with suggestion rows and a sortable, infinite-scroll grid
 - Title pages with cast, genres, season picker, and episode list
+- Trailer previews (Jellyfin): rest the mouse on a poster and a pop-out plays
+  its trailer, muted, with Play and More info buttons; the home banner and title
+  pages play the trailer behind the picture. They stay off on phones, with data
+  saver or reduced motion, and can be switched off in the account menu.
+- Going back puts you where you were, including how far each row was scrolled
 - Search across all libraries
 - **Manage** tab for the server owner: everyone with access, what they've
   finished watching, who's watching right now, and buttons to remove someone's
@@ -147,6 +152,20 @@ Anyone with the link can watch, so treat it like a password. It needs the server
 public `https://` address to work for people outside your home. Plex can't do this
 without Plex Pass (sharing only selected titles is a Plex Pass feature).
 
+## Adding more with HolyArrs
+
+[HolyArrs](https://holyarrs.com) is a separate self-hosted app that finds movies and
+shows, downloads them through your downloader and files them into your library.
+The server owner gets a **HolyArrs** tab: enter its address once (usually
+`http://localhost:6262` on the computer it runs on; it's saved per device), then
+search for a title or jump to its Explore, Requests, Downloads and Calendar pages.
+Searches with no match offer "Find it in HolyArrs", and title pages get a
+**HolyArrs ↗** button for that title (missing seasons, a better copy).
+
+HolyArrs doesn't accept requests from other sites and can't be shown inside another
+page, so these open HolyArrs in its own tab. Setting up HolyArrs itself (Docker, a
+downloader and its Sources) happens in HolyArrs.
+
 ## How it works
 
 | File | Purpose |
@@ -155,6 +174,8 @@ without Plex Pass (sharing only selected titles is a Plex Pass feature).
 | `js/jellyfin.js` | Jellyfin API, translated into the same shape the pages use for Plex |
 | `js/views.js` | Pages: home, library, title, search, sign-in and server picker |
 | `js/player.js` | Video player: direct play or HLS (via hls.js), progress reporting, up-next |
+| `js/trailers.js` | Trailer previews on banners and poster pop-outs (YouTube embeds) |
+| `js/holyarrs.js` | Links into a HolyArrs install: address, search and title pages |
 | `js/app.js` | Hash router, error handling and auto-reconnect, global click handling |
 | `js/state.js` | Current server and account, saved in localStorage |
 
