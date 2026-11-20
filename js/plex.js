@@ -381,6 +381,16 @@ export class PlexServer {
     return item;
   }
 
+  // Everything in the movie and TV libraries with this actor or director (a tag id
+  // from a title's Role or Director list). Plex has no page for the person themselves.
+  async person(id) {
+    const sections = (await this.sections()).filter(s => s.type === 'movie' || s.type === 'show');
+    const find = filter => Promise.all(sections.map(s => this.get(`/library/sections/${s.key}/all`, { [filter]: id }).then(mc => mc.Metadata ?? [], () => [])))
+      .then(lists => lists.flat().sort((a, b) => (b.year ?? 0) - (a.year ?? 0)));
+    const [directed, acted] = await Promise.all([find('director'), find('actor')]);
+    return { directed, acted };
+  }
+
   async children(id) { return (await this.get(`/library/metadata/${id}/children`)).Metadata ?? []; }
   async allLeaves(id) { return (await this.get(`/library/metadata/${id}/allLeaves`)).Metadata ?? []; }
 

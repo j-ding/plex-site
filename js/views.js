@@ -102,8 +102,16 @@ export async function renderHeader() {
     const sections = await getSections();
     $('#nav').insertAdjacentHTML('beforeend', sections.map(s => `<a href="#/library/${esc(s.key)}">${esc(s.title)}</a>`).join(''));
   } catch {}
+  if (canRequest()) $('#nav').insertAdjacentHTML('beforeend', `<a href="#/requests">Requests</a>`);
   if (await isAdmin().catch(() => false)) {
     $('#nav').insertAdjacentHTML('beforeend', `<a href="#/holyarrs" class="nav-admin">HolyArrs</a><a href="#/manage" class="nav-admin">Manage</a>`);
+    // The owner sees how many requests are waiting.
+    if (canRequest()) {
+      state.server.allRequests().then(list => {
+        const n = list.filter(r => r.status === 'open').length;
+        if (n) $('#nav a[href="#/requests"]')?.insertAdjacentHTML('beforeend', ` <span class="nav-badge" aria-label="${n} waiting">${n}</span>`);
+      }).catch(() => {});
+    }
   }
   updateNav();
 }
@@ -133,7 +141,24 @@ export function hideHeader() {
 
 /* ---------- building blocks ---------- */
 
+// "Today", "Tomorrow", or "Fri, Nov 21".
+const airDay = ms => {
+  const days = Math.round((new Date(ms).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / 86400000);
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Tomorrow';
+  return new Date(ms).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+};
+
 function cardInfo(item, landscape) {
+  // An episode that isn't out yet can't play, so it opens its show.
+  if (item.upcoming) {
+    return {
+      href: `#/title/${item.grandparentRatingKey}`,
+      img: item.thumb || item.grandparentArt,
+      title: item.grandparentTitle,
+      sub: `${airDay(item.airsAt)} · S${item.parentIndex ?? '?'}:E${item.index ?? '?'} ${item.title || ''}`,
+    };
+  }
   switch (item.type) {
     case 'episode':
       return {
@@ -264,13 +289,15 @@ export async function home(seq) {
   pageTitle();
   app().innerHTML = loading();
   const s = state.server;
-  const [deck, hubs] = await Promise.all([s.onDeck().catch(() => []), s.hubs()]);
+  const [deck, hubs, soon] = await Promise.all([s.onDeck().catch(() => []), s.hubs(), s.upcoming ? s.upcoming(20).catch(() => []) : []]);
   const heroPool = hubs
     .filter(h => h.type === 'movie' || h.type === 'show')
     .flatMap(h => h.Metadata || [])
     .filter(m => m.art && m.summary);
   const pick = heroPool[Math.floor(Math.random() * heroPool.length)];
-  const rows = row('Continue Watching', deck, { landscape: true, resume: true }) + hubRows(hubs);
+  const rows = row('Continue Watching', deck, { landscape: true, resume: true })
+    + row('Coming Up', soon, { landscape: true }, '#/upcoming')
+    + hubRows(hubs);
   if (mount(seq, rows
     ? `${hero(pick)}<div class="rows ${pick ? 'under-hero' : 'page-top'}">${rows}</div>`
     : `<div class="page-top pad empty"><h2>Nothing here yet</h2><p class="muted">Add some movies or shows to your Plex libraries and they'll show up here.</p></div>`)) heroTrailer($('.hero'), pick?.ratingKey);
@@ -444,6 +471,12 @@ export async function title(seq, id, params) {
   const resume = !isShow && item.viewOffset ? item.viewOffset : 0;
   const tags = (list, n) => (list || []).slice(0, n).map(t => esc(t.tag)).join(', ');
   const fact = (label, value) => (value ? `<p>${label}: <span>${value}</span></p>` : '');
+  // Each name opens everything in the library with that person.
+  const people = (list, n) => (list || []).slice(0, n).map(p => (p.id != null
+    ? `<a class="person-link" href="${esc(personHref(p))}">${esc(p.tag)}</a>`
+    : esc(p.tag))).join(', ');
+  const hiddenFrom = (item.keywords || []).filter(t => t.startsWith('dfhide-'));
+  const owner = state.server.kind === 'jellyfin' && state.server.admin && !state.server.guest;
   const current = params.get('season') || (seasons.find(x => (x.viewedLeafCount || 0) < x.leafCount) || seasons[0])?.ratingKey;
   // The owner can jump to HolyArrs for this title (missing seasons, a better copy, subtitles).
   const findMore = holyarrsAddress() && (await isAdmin().catch(() => false)) ? holyarrsTitle(item) : null;
@@ -460,8 +493,8 @@ export async function title(seq, id, params) {
           <button class="btn primary" data-play="${esc(id)}">▶ ${resume ? 'Resume' : 'Play'}</button>
           ${resume ? `<a class="btn" href="#/watch/${esc(id)}?start=1">↺ Start over</a>` : ''}
           <button class="btn" data-action="toggle-watched" data-key="${esc(id)}" data-watched="${watched ? 1 : 0}">${watched ? '✓ Watched' : 'Mark as watched'}</button>
-          ${state.server.kind === 'jellyfin' && state.server.admin && !state.server.guest
-            ? `<button class="btn" data-action="share" data-key="${esc(id)}" data-title="${esc(item.title)}">↗ Share</button>` : ''}
+          ${owner ? `<button class="btn" data-action="share" data-key="${esc(id)}" data-title="${esc(item.title)}">↗ Share</button>` : ''}
+          ${owner ? `<button class="btn" data-action="hide" data-key="${esc(id)}" data-title="${esc(item.title)}">${hiddenFrom.length ? '⊘ Hidden' : '⊘ Hide'}</button>` : ''}
           ${findMore ? `<a class="btn" href="${esc(findMore)}" ${linkAttrs} title="Open this ${isShow ? 'show' : 'movie'} in HolyArrs">HolyArrs ↗</a>` : ''}
         </div>
         ${resume ? `<div class="resume"><div class="progress"><span style="width:${((resume / item.duration) * 100).toFixed(1)}%"></span></div><small>${duration(item.duration - resume)} left</small></div>` : ''}
@@ -471,8 +504,8 @@ export async function title(seq, id, params) {
       <p class="summary">${esc(item.summary)}</p>
       <div class="facts">
         ${fact('Genres', tags(item.Genre, 4))}
-        ${fact('Director', tags(item.Director, 3))}
-        ${fact('Cast', tags(item.Role, 8))}
+        ${fact('Director', people(item.Director, 3))}
+        ${fact('Cast', people(item.Role, 8))}
         ${fact('Studio', esc(item.studio))}
       </div>
     </div>
@@ -543,12 +576,277 @@ export async function search(seq, q) {
           <div class="grid ${landscape ? 'landscape' : ''}">${h.Metadata.map(m => card(m, { landscape })).join('')}</div>`;
       }).join('')
     : `<p class="muted">No results for “${esc(q)}”.</p>`;
-  // The owner can go looking for it in HolyArrs.
-  if (holyarrsAddress() && (await isAdmin().catch(() => false)) && !stale(seq)) {
+  // The owner can go looking for it in HolyArrs; everyone else can ask for it.
+  const admin = await isAdmin().catch(() => false);
+  if (stale(seq) || !$('#results')) return;
+  const lead = groups.length ? 'Not what you wanted?' : 'Not in your library yet?';
+  if (admin && holyarrsAddress()) {
     $('#results').insertAdjacentHTML('beforeend', `
-      <p class="holyarrs-hint">${groups.length ? 'Not what you wanted?' : 'Not in your library yet?'}
-        <a href="${esc(holyarrsSearch(q))}" ${linkAttrs}>Find “${esc(q)}” in HolyArrs ↗</a></p>`);
+      <p class="holyarrs-hint">${lead} <a href="${esc(holyarrsSearch(q))}" ${linkAttrs}>Find “${esc(q)}” in HolyArrs ↗</a></p>`);
+  } else if (!admin && canRequest()) {
+    $('#results').insertAdjacentHTML('beforeend', `
+      <p class="holyarrs-hint">${lead} <a href="#/requests?q=${encodeURIComponent(q)}">Ask for “${esc(q)}” ›</a></p>`);
   }
+}
+
+/* ---------- people ---------- */
+
+function personHref(p) {
+  const q = new URLSearchParams({ name: p.tag });
+  // Plex's photos are full addresses that the person page can't look up again.
+  if (p.thumb && /^https?:/.test(p.thumb)) q.set('thumb', p.thumb);
+  return `#/person/${encodeURIComponent(p.id)}?${q}`;
+}
+
+export async function personView(seq, id, params) {
+  app().innerHTML = loading();
+  const p = await state.server.person(id);
+  if (stale(seq)) return;
+  const name = p.name || params.get('name') || 'Unknown';
+  pageTitle(name);
+  const thumb = p.thumb || params.get('thumb');
+  const facts = [p.born && `Born ${p.born}`, p.place].filter(Boolean).join(' · ');
+  // Someone who directed and acted in a film is listed once, under Directed.
+  const directedIds = new Set(p.directed.map(i => String(i.ratingKey)));
+  const acted = p.acted.filter(i => !directedIds.has(String(i.ratingKey)));
+  const grid = (label, items) => (items.length ? `
+    <h2 class="group-title">${label} <span class="muted">${items.length}</span></h2>
+    <div class="grid">${items.map(i => card(i)).join('')}</div>` : '');
+  if (!mount(seq, `
+    <div class="page-top pad person">
+      <div class="person-head">
+        <div class="person-photo">${thumb ? `<img src="${esc(img(thumb, 300, 450))}" alt="" onerror="this.remove()">` : ''}<span>${esc(name[0])}</span></div>
+        <div class="person-text">
+          <h1 class="page-title">${esc(name)}</h1>
+          ${facts ? `<p class="muted">${esc(facts)}</p>` : ''}
+          ${p.summary ? `<p class="person-bio">${esc(p.summary)}</p><button type="button" class="link person-more" hidden>More</button>` : ''}
+        </div>
+      </div>
+      ${grid('Directed', p.directed)}
+      ${grid(p.directed.length ? 'Appears in' : 'In your library', acted)}
+      ${p.directed.length || acted.length ? '' : '<p class="muted">Nothing with them in your library.</p>'}
+    </div>`)) return;
+  const bio = $('.person-bio');
+  const more = $('.person-more');
+  if (bio && bio.scrollHeight > bio.clientHeight + 2) {
+    more.hidden = false;
+    more.addEventListener('click', () => {
+      bio.classList.toggle('open');
+      more.textContent = bio.classList.contains('open') ? 'Less' : 'More';
+    });
+  }
+}
+
+/* ---------- coming up ---------- */
+
+export async function upcomingView(seq) {
+  pageTitle('Coming Up');
+  app().innerHTML = loading();
+  const items = state.server.upcoming ? await state.server.upcoming(100) : [];
+  if (stale(seq)) return;
+  const days = new Map();
+  for (const item of items) {
+    const day = airDay(item.airsAt);
+    if (!days.has(day)) days.set(day, []);
+    days.get(day).push(item);
+  }
+  mount(seq, `
+    <div class="page-top pad upcoming">
+      <h1 class="page-title">Coming Up</h1>
+      <p class="muted">New episodes of shows in your library, by the day they air.</p>
+      ${items.length
+        ? [...days].map(([day, list]) => `
+          <h2 class="group-title">${esc(day)}</h2>
+          <div class="grid landscape">${list.map(i => card(i, { landscape: true })).join('')}</div>`).join('')
+        : `<p class="muted">Nothing announced yet. Jellyfin lists an episode here once its air date is known, so this fills in as shows announce new seasons.</p>`}
+    </div>`);
+}
+
+/* ---------- requests: ask for something that isn't in the library (Jellyfin) ---------- */
+
+export const canRequest = () => !!state.server?.addRequest && !state.server.guest;
+const REQUEST_STATUS = { open: 'Waiting', added: 'Added', declined: 'Not this time' };
+const sameTitle = (a, b) => a.toLowerCase().replace(/[^a-z0-9]+/g, '') === b.toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+export async function requestsView(seq, params = new URLSearchParams()) {
+  pageTitle('Requests');
+  if (!canRequest()) throw new Error('Requests work on Jellyfin servers.');
+  app().innerHTML = loading();
+  const s = state.server;
+  const admin = await isAdmin().catch(() => false);
+  const list = admin ? await s.allRequests() : (await s.requests()).map(r => ({ ...r, user: null }));
+  if (stale(seq)) return;
+  const open = list.filter(r => r.status === 'open');
+  const done = list.filter(r => r.status !== 'open').slice(0, 30);
+  const ha = admin && holyarrsAddress();
+
+  const rowHtml = r => {
+    const i = list.indexOf(r);
+    const meta = [admin && r.user ? `asked by ${esc(r.user.Name)}` : '', when(r.at / 1000), r.note ? `“${esc(r.note)}”` : ''].filter(Boolean).join(' · ');
+    let actions = '';
+    if (r.status === 'open' && admin) {
+      actions = `
+        ${ha ? `<a class="btn small" href="${esc(holyarrsSearch(r.title))}" ${linkAttrs}>Find in HolyArrs ↗</a>` : ''}
+        <button class="btn small accent" data-req="added" data-i="${i}">Mark added</button>
+        <button class="btn small" data-req="declined" data-i="${i}">Decline</button>`;
+    } else if (r.status === 'open') {
+      actions = `<button class="btn small" data-req="remove" data-i="${i}">Cancel</button>`;
+    } else {
+      actions = `<button class="btn small" data-req="remove" data-i="${i}">Clear</button>`;
+    }
+    return `
+      <div class="pending-row request-row">
+        <span class="share-info">
+          <span class="request-line">
+            <strong>${esc(r.title)}</strong> <span class="pill">${r.kind === 'show' ? 'Show' : 'Movie'}</span>
+            <span class="request-status ${esc(r.status)}">${REQUEST_STATUS[r.status] || ''}</span>
+          </span>
+          <small class="muted">${meta}</small>
+          <small class="request-found" id="found-${i}"></small>
+        </span>
+        <span class="member-actions">${actions}</span>
+      </div>`;
+  };
+
+  if (!mount(seq, `
+    <div class="page-top pad manage requests">
+      <h1 class="page-title">Requests</h1>
+      <p class="muted">${admin
+        ? `What people would like added.${ha ? ' Find it in HolyArrs, then' : ' Add it to the library, then'} mark it added so they know.`
+        : 'Want something that isn’t here? Ask for it and you’ll see here when it’s been added.'}</p>
+      <form class="invite-form request-form" id="request-form">
+        <input name="title" type="text" autocomplete="off" maxlength="100" required placeholder="Movie or show name" aria-label="Movie or show name" value="${esc(params.get('q') || '')}">
+        <select name="kind" aria-label="Movie or show"><option value="movie">Movie</option><option value="show">Show</option></select>
+        <input name="note" type="text" autocomplete="off" maxlength="140" placeholder="Note (optional), e.g. the 2003 one" aria-label="Note">
+        <button class="btn accent">Ask</button>
+      </form>
+      <h2 class="group-title">${admin ? 'Waiting' : 'Your requests'}</h2>
+      ${(admin ? open : list).length
+        ? `<div class="pending-list">${(admin ? open : list).map(rowHtml).join('')}</div>`
+        : `<p class="muted">${admin ? 'Nothing waiting.' : 'You haven’t asked for anything yet.'}</p>`}
+      ${admin && done.length ? `<h2 class="group-title">Done</h2><div class="pending-list">${done.map(rowHtml).join('')}</div>` : ''}
+    </div>`)) return;
+
+  const refresh = () => requestsView(seq).catch(errorView);
+  $('#request-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const form = e.target;
+    const button = form.querySelector('button');
+    button.disabled = true;
+    try {
+      await s.addRequest({ title: form.title.value.trim(), kind: form.kind.value, note: form.note.value.trim() });
+      toast(admin ? 'Added to the list.' : 'Asked. You’ll see it here when it’s added.');
+      if (params.has('q')) history.replaceState(history.state, '', '#/requests');
+      state.rendered = '/requests';
+      refresh();
+    } catch (err) {
+      button.disabled = false;
+      toast(`Couldn't send it: ${err.message}`);
+    }
+  });
+  app().querySelector('.requests').addEventListener('click', async e => {
+    const b = e.target.closest('[data-req]');
+    if (!b) return;
+    const r = list[b.dataset.i];
+    const userId = r.user?.Id || s.userId;
+    b.disabled = true;
+    try {
+      if (b.dataset.req === 'remove') await s.removeRequest(userId, r.id);
+      else await s.setRequestStatus(userId, r.id, b.dataset.req);
+      refresh();
+    } catch (err) {
+      b.disabled = false;
+      toast(`Couldn't update it: ${err.message}`);
+    }
+  });
+
+  // Point out requests that are already in the library.
+  for (const r of list.filter(x => x.status !== 'declined').slice(0, 15)) {
+    s.search(r.title).then(hubs => {
+      const want = r.kind === 'show' ? 'show' : 'movie';
+      const hit = hubs.flatMap(h => h.Metadata || []).find(m => m.type === want && sameTitle(m.title || '', r.title));
+      const box = $(`#found-${list.indexOf(r)}`);
+      if (hit && box && !stale(seq)) box.innerHTML = `In the library: <a href="#/title/${esc(hit.ratingKey)}">${esc(hit.title)}${hit.year ? ` (${hit.year})` : ''} ›</a>`;
+    }).catch(() => {});
+  }
+}
+
+/* ---------- owner: hide a title from someone (Jellyfin) ---------- */
+
+export async function openHideDialog(itemId, title, onChange) {
+  const s = state.server;
+  document.querySelector('.dialog-backdrop')?.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'dialog-backdrop';
+  wrap.innerHTML = `<div class="dialog">${loading()}</div>`;
+  document.body.append(wrap);
+  const close = () => wrap.remove();
+  wrap.addEventListener('click', e => {
+    if (e.target === wrap || e.target.closest('[data-close-dialog]')) close();
+  });
+  let people, names, item;
+  try {
+    [people, names, item] = await Promise.all([s.people(), s.hideTags(), s.metadata(itemId)]);
+  } catch (err) {
+    wrap.innerHTML = `<div class="dialog"><p class="error">Couldn't load this: ${esc(err.message)}</p><div class="actions"><button class="btn" data-close-dialog>Close</button></div></div>`;
+    return;
+  }
+  const current = (item.keywords || []).filter(t => names.has(t));
+  const taken = new Set(current);
+  wrap.innerHTML = `
+    <form class="dialog" role="dialog" aria-label="Hide ${esc(title)}">
+      <h2>Hide “${esc(title)}”</h2>
+      <p class="muted">They won't see it anywhere: not on DingFlix, not in Jellyfin's own apps. You still do.</p>
+      ${current.length ? `<div class="pending-list hide-current">${current.map(tag => `
+        <div class="pending-row">
+          <span>Hidden from <strong>${esc(names.get(tag))}</strong></span>
+          <button type="button" class="btn small" data-unhide="${esc(tag)}">Unhide</button>
+        </div>`).join('')}</div>` : ''}
+      ${taken.has('dfhide-all') ? '' : `
+        <label>Hide it from
+          <select name="who">
+            <option value="all">Everyone except you</option>
+            ${people.filter(u => !taken.has(`dfhide-${u.Id}`)).map(u => `<option value="${esc(u.Id)}">${esc(u.Name)}</option>`).join('')}
+          </select>
+        </label>`}
+      <div class="dialog-result"></div>
+      <div class="actions">
+        ${taken.has('dfhide-all') ? '' : '<button class="btn accent" data-create>Hide</button>'}
+        <button type="button" class="btn" data-close-dialog>Close</button>
+      </div>
+    </form>`;
+  const form = $('.dialog', wrap);
+  const fail = err => { $('.dialog-result', form).innerHTML = `<p class="error">${esc(err.message)}</p>`; };
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const button = $('[data-create]', form);
+    button.disabled = true;
+    button.textContent = 'Hiding…';
+    try {
+      await s.hide(itemId, form.who.value);
+      toast(`Hidden from ${form.who.value === 'all' ? 'everyone else' : form.who.selectedOptions[0].text}.`);
+      close();
+      onChange();
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = 'Hide';
+      fail(err);
+    }
+  });
+  form.addEventListener('click', async e => {
+    const b = e.target.closest('[data-unhide]');
+    if (!b) return;
+    b.disabled = true;
+    try {
+      await s.unhide(itemId, b.dataset.unhide);
+      toast('Visible again.');
+      close();
+      onChange();
+    } catch (err) {
+      b.disabled = false;
+      fail(err);
+    }
+  });
 }
 
 /* ---------- owner: HolyArrs, to find and download more ---------- */
@@ -831,6 +1129,9 @@ async function jellyfinManage(seq) {
     shares = shares.filter(x => !x.expired);
     toast(`Removed ${expired.length} expired share link${expired.length > 1 ? 's' : ''}.`);
   }
+  const hidden = await s.hidden().catch(() => []);
+  // Accounts made since something was hidden from everyone get the block too.
+  if (hidden.some(h => h.from.some(f => f.tag === 'dfhide-all'))) s.syncHidden().catch(() => {});
   if (stale(seq)) return;
   const savedLinks = store.get('jfShareLinks', {});
   const avatar = u => (u.PrimaryImageTag ? `<img src="${esc(s.image(`/Users/${u.Id}/Images/Primary?tag=${u.PrimaryImageTag}`, 88))}" alt="">` : esc(u.Name[0].toUpperCase()));
@@ -863,6 +1164,17 @@ async function jellyfinManage(seq) {
           </span>
         </div>`).join('')}</div>`
         : '<p class="muted">No shared links. Open any movie or show and press <strong>Share</strong> to send it to someone without them signing up.</p>'}
+
+      <h2 class="group-title">Hidden titles</h2>
+      ${hidden.length ? `<div class="pending-list">${hidden.flatMap((h, i) => h.from.map(f => `
+        <div class="pending-row">
+          <span class="share-info">
+            <a href="#/title/${esc(h.item.ratingKey)}"><strong>${esc(h.item.title)}</strong>${h.item.year ? ` <span class="muted">(${esc(h.item.year)})</span>` : ''}</a>
+            <small class="muted">hidden from ${esc(f.name)}</small>
+          </span>
+          <span class="member-actions"><button class="btn small" data-unhide="${i}" data-tag="${esc(f.tag)}">Unhide</button></span>
+        </div>`)).join('')}</div>`
+        : '<p class="muted">Nothing hidden. Open a movie or show and press <strong>Hide</strong> to keep it from everyone else or from one person (handy for kids).</p>'}
 
       <h2 class="group-title">Watching now</h2>
       ${nowPlayingHtml(sessions) || '<p class="muted">Nobody is watching right now.</p>'}
@@ -937,6 +1249,19 @@ async function jellyfinManage(seq) {
   });
 
   app().querySelector('.manage').addEventListener('click', async e => {
+    const unhide = e.target.closest('[data-unhide]');
+    if (unhide) {
+      unhide.disabled = true;
+      try {
+        await s.unhide(hidden[unhide.dataset.unhide].item.ratingKey, unhide.dataset.tag);
+        toast('Visible again.');
+        refresh();
+      } catch (err) {
+        unhide.disabled = false;
+        toast(`Couldn't unhide it: ${err.message}`);
+      }
+      return;
+    }
     const copyShare = e.target.closest('[data-copy-share]');
     if (copyShare) return void copy(savedLinks[shares[copyShare.dataset.copyShare].id]);
     const revoke = e.target.closest('[data-revoke]');

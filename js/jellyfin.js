@@ -168,7 +168,11 @@ export class JellyfinServer {
       ? img(i.Id, 'Backdrop', i.BackdropImageTags[0])
       : i.ParentBackdropImageTags?.length ? img(i.ParentBackdropItemId, 'Backdrop', i.ParentBackdropImageTags[0]) : null;
     const seriesPoster = img(i.SeriesId, 'Primary', i.SeriesPrimaryImageTag);
-    const people = kind => (i.People || []).filter(p => p.Type === kind).map(p => ({ tag: p.Name }));
+    const people = kind => (i.People || []).filter(p => p.Type === kind).map(p => ({
+      tag: p.Name,
+      id: p.Id,
+      thumb: p.PrimaryImageTag ? `/Items/${p.Id}/Images/Primary?tag=${p.PrimaryImageTag}` : null,
+    }));
     const unplayed = ud.UnplayedItemCount || 0;
 
     const item = {
@@ -417,7 +421,7 @@ export class JellyfinServer {
   }
 
   async metadata(id) {
-    const item = await this.api(`/Items/${id}`, { params: { userId: this.userId, Fields: `${ITEM_FIELDS},RemoteTrailers,ProviderIds` } }).catch(err => {
+    const item = await this.api(`/Items/${id}`, { params: { userId: this.userId, Fields: `${ITEM_FIELDS},RemoteTrailers,ProviderIds,Tags` } }).catch(err => {
       if (err.status === 404) throw new Error('That title is no longer on the server.');
       throw err;
     });
@@ -618,7 +622,7 @@ export class JellyfinServer {
   // New accounts are shown on the "Who's watching?" screen and can see every library.
   async createUser(name, password) {
     const user = await this.api('/Users/New', { method: 'POST', json: { Name: name, Password: password || '' } });
-    await this.updatePolicy(user.Id, { IsHidden: false, EnableAllFolders: true });
+    await this.updatePolicy(user.Id, { IsHidden: false, EnableAllFolders: true, BlockedTags: ['dfhide-all'] });
     return user;
   }
 
@@ -640,6 +644,17 @@ export class JellyfinServer {
     await this.api(`/Items/${itemId}`, { method: 'POST', json: item, raw: true });
   }
 
+  // Tags a movie, or a show with all its seasons and episodes.
+  async tagTree(itemId, tag, on) {
+    const item = await this.api(`/Items/${itemId}`, { params: { userId: this.userId } });
+    const targets = [itemId];
+    if (item.Type === 'Series' || item.Type === 'Season') {
+      const kids = await this.api('/Items', { params: { userId: this.userId, ParentId: itemId, Recursive: true, IncludeItemTypes: 'Season,Episode' } });
+      targets.push(...(kids.Items || []).map(k => k.Id));
+    }
+    for (const target of targets) await this.setTag(target, tag, on);
+  }
+
   // Shares one movie or show: tags it (a show's seasons and episodes too), then
   // creates a hidden guest account that can only see items with that tag.
   async createShare(itemId, { note = '', days = 0 } = {}) {
@@ -650,13 +665,7 @@ export class JellyfinServer {
     const name = `share-${id}-${expires ? expires.toString(36) : 'never'}${cleanNote ? ` ${cleanNote}` : ''}`;
     const password = Array.from(crypto.getRandomValues(new Uint8Array(18)), b => b.toString(36).padStart(2, '0')).join('').slice(0, 28);
 
-    const item = await this.api(`/Items/${itemId}`, { params: { userId: this.userId } });
-    const targets = [itemId];
-    if (item.Type === 'Series' || item.Type === 'Season') {
-      const kids = await this.api('/Items', { params: { userId: this.userId, ParentId: itemId, Recursive: true, IncludeItemTypes: 'Season,Episode' } });
-      targets.push(...(kids.Items || []).map(k => k.Id));
-    }
-    for (const target of targets) await this.setTag(target, tag, true);
+    await this.tagTree(itemId, tag, true);
 
     const user = await this.api('/Users/New', { method: 'POST', json: { Name: name, Password: password } });
     await this.updatePolicy(user.Id, {
@@ -698,6 +707,130 @@ export class JellyfinServer {
     await this.deleteUser(share.user.Id).catch(err => { if (err.status !== 404) throw err; });
     const r = await this.api('/Items', { params: { userId: this.userId, Tags: share.tag, Recursive: true } }).catch(() => ({}));
     for (const item of r.Items || []) await this.setTag(item.Id, share.tag, false).catch(() => {});
+  }
+
+  /* --- hiding titles from people (owner only) ---
+     A hidden title gets a `dfhide-all` or `dfhide-<user id>` tag, and those people's
+     accounts block that tag, so it's gone for them in every Jellyfin app too. */
+
+  // Everyone who isn't an administrator or a share-link guest.
+  async people() {
+    return (await this.users()).filter(u => !u.Policy?.IsAdministrator && !JellyfinServer.parseShareName(u.Name));
+  }
+
+  async blockTag(user, tag) {
+    const blocked = user.Policy?.BlockedTags || [];
+    if (blocked.includes(tag)) return;
+    await this.api(`/Users/${user.Id}/Policy`, { method: 'POST', json: { ...user.Policy, BlockedTags: [...blocked, tag] }, raw: true });
+  }
+
+  // `who` is 'all' or a user id.
+  async hide(itemId, who) {
+    const tag = `dfhide-${who}`;
+    await this.tagTree(itemId, tag, true);
+    const users = who === 'all' ? await this.people() : [await this.api(`/Users/${who}`)];
+    for (const u of users) await this.blockTag(u, tag);
+  }
+
+  unhide(itemId, tag) { return this.tagTree(itemId, tag, false); }
+
+  // Who each hide tag is for, by name.
+  async hideTags() {
+    const users = await this.users();
+    return new Map([['dfhide-all', 'everyone'], ...users.map(u => [`dfhide-${u.Id}`, u.Name])]);
+  }
+
+  async hidden() {
+    const names = await this.hideTags();
+    const r = await this.api('/Items', {
+      params: { userId: this.userId, Tags: [...names.keys()].join('|'), Recursive: true, IncludeItemTypes: 'Movie,Series', Fields: `${ITEM_FIELDS},Tags` },
+    });
+    return (r.Items || []).map(x => ({
+      item: this.toItem(x),
+      from: (x.Tags || []).filter(t => names.has(t)).map(tag => ({ tag, name: names.get(tag) })),
+    }));
+  }
+
+  // Accounts made after something was hidden from everyone need the block too.
+  async syncHidden() {
+    for (const u of await this.people()) await this.blockTag(u, 'dfhide-all');
+  }
+
+  /* --- requests: titles people would like added ---
+     Kept in each person's own Jellyfin display preferences, which the owner (an
+     administrator) can read and update too, so no extra server is needed. */
+
+  prefs(userId) {
+    return this.api('/DisplayPreferences/dingflix', { params: { userId, client: 'dingflix' } });
+  }
+
+  async requests(userId = this.userId) {
+    const prefs = await this.prefs(userId);
+    try {
+      return JSON.parse(prefs?.CustomPrefs?.requests || '[]');
+    } catch {
+      return [];
+    }
+  }
+
+  async editRequests(userId, change) {
+    const prefs = (await this.prefs(userId)) || {};
+    let list;
+    try {
+      list = JSON.parse(prefs.CustomPrefs?.requests || '[]');
+    } catch {
+      list = [];
+    }
+    prefs.CustomPrefs = { ...prefs.CustomPrefs, requests: JSON.stringify(change(list)) };
+    await this.api('/DisplayPreferences/dingflix', { method: 'POST', params: { userId, client: 'dingflix' }, json: prefs, raw: true });
+  }
+
+  addRequest({ title, kind, note }) {
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    return this.editRequests(this.userId, list => [{ id, title, kind, note, at: Date.now(), status: 'open' }, ...list].slice(0, 50));
+  }
+
+  removeRequest(userId, id) { return this.editRequests(userId, list => list.filter(r => r.id !== id)); }
+
+  setRequestStatus(userId, id, status) {
+    return this.editRequests(userId, list => list.map(r => (r.id === id ? { ...r, status, doneAt: Date.now() } : r)));
+  }
+
+  // Everyone's requests, open ones first (owner only).
+  async allRequests() {
+    const users = (await this.users()).filter(u => !JellyfinServer.parseShareName(u.Name));
+    const lists = await Promise.all(users.map(u => this.requests(u.Id).then(l => l.map(r => ({ ...r, user: u })), () => [])));
+    return lists.flat().sort((a, b) => (a.status !== 'open') - (b.status !== 'open') || b.at - a.at);
+  }
+
+  /* --- coming up: episodes not out yet, for shows in the library --- */
+
+  async upcoming(limit = 40) {
+    const r = await this.api('/Shows/Upcoming', { params: { userId: this.userId, Limit: limit, Fields: `${ITEM_FIELDS},PremiereDate` } });
+    return (r.Items || [])
+      .map(x => ({ ...this.toItem(x), upcoming: true, airsAt: x.PremiereDate ? Date.parse(x.PremiereDate) : 0 }))
+      .filter(x => x.airsAt);
+  }
+
+  /* --- people: everything in the library with an actor or director --- */
+
+  async person(id) {
+    const titles = types => this.query({ PersonIds: id, PersonTypes: types, Recursive: true, IncludeItemTypes: 'Movie,Series', SortBy: 'ProductionYear,SortName', SortOrder: 'Descending' })
+      .then(r => (r.Items || []).map(x => this.toItem(x)));
+    const [p, directed, acted] = await Promise.all([
+      this.api(`/Items/${id}`, { params: { userId: this.userId } }).catch(() => ({})),
+      titles('Director'),
+      titles('Actor,GuestStar'),
+    ]);
+    return {
+      name: p.Name,
+      summary: p.Overview,
+      thumb: p.ImageTags?.Primary ? `/Items/${id}/Images/Primary?tag=${p.ImageTags.Primary}` : null,
+      born: p.PremiereDate ? new Date(p.PremiereDate).getFullYear() : null,
+      place: p.ProductionLocations?.[0],
+      directed,
+      acted,
+    };
   }
 }
 

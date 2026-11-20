@@ -20,6 +20,19 @@ touches it.
   pages play the trailer behind the picture. They stay off on phones, with data
   saver or reduced motion, and can be switched off in the account menu.
 - Going back puts you where you were, including how far each row was scrolled
+- People pages: actor and director names on a title page open everything in
+  your library with them (Jellyfin adds their photo and bio)
+- Coming Up (Jellyfin): a home row and page of new episodes about to air for
+  shows in your library
+- Requests (Jellyfin): anyone can ask for a movie or show that isn't there
+  (search offers it when nothing matches). The owner sees everyone's requests,
+  with a count on the tab, and marks each one added or declined; people see the
+  answer on their own Requests page. Requests are stored in each person's
+  Jellyfin display preferences, so nothing else needs to run.
+- Hide a title (Jellyfin, owner): from everyone else or from one person, for
+  example to keep a horror film away from a kid's profile. Hidden titles use
+  Jellyfin's blocked tags, so they're gone in Jellyfin's own apps too. Manage →
+  Hidden titles lists them with an Unhide button.
 - Search across all libraries
 - **Manage** tab for the server owner: everyone with access, what they've
   finished watching, who's watching right now, and buttons to remove someone's

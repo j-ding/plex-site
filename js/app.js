@@ -82,6 +82,9 @@ async function route() {
   else if (path === '/search') render = () => views.search(seq, params.get('q') || '');
   else if (path === '/manage') render = () => views.manage(seq);
   else if (path === '/holyarrs') render = () => views.holyarrsView(seq, params);
+  else if (path === '/requests') render = () => views.requestsView(seq, params);
+  else if (path === '/upcoming') render = () => views.upcomingView(seq);
+  else if ((m = path.match(/^\/person\/([^/]+)$/))) render = () => views.personView(seq, decodeURIComponent(m[1]), params);
   else return void location.replace('#/');
   drawing = true;
   await run(render, seq);
@@ -274,6 +277,12 @@ document.addEventListener('click', async e => {
       break;
     case 'scan':
       scanLibraries(action);
+      break;
+    case 'hide':
+      views.openHideDialog(action.dataset.key, action.dataset.title, () => {
+        state.rendered = null;
+        route();
+      });
       break;
     case 'toggle-trailers':
       setTrailersOn(!trailersOn());
