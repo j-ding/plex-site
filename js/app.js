@@ -13,8 +13,22 @@ function parseHash() {
 
 let retried = false;
 
+// When a Jellyfin server serves DingFlix itself (say at /web, through Tailscale),
+// that server is the one to sign in to.
+const jellyfinHost = location.hostname.endsWith('github.io') || location.protocol === 'file:'
+  ? Promise.resolve(null)
+  : fetch(`${location.origin}/System/Info/Public`, { cache: 'no-store' })
+    .then(r => (r.ok ? r.json() : null))
+    .then(info => (/jellyfin/i.test(info?.ProductName || '') ? location.origin : null))
+    .catch(() => null);
+
 async function route() {
   const { raw, path, params } = parseHash();
+
+  if (!state.server && !state.userToken && (path === '/' || path === '/connect')) {
+    const host = await jellyfinHost;
+    if (host) return void location.replace(`#/jellyfin?server=${encodeURIComponent(host)}`);
+  }
 
   if (path === '/connect') {
     closePlayer();
