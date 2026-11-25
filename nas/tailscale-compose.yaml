@@ -1,0 +1,17 @@
+# serve.json is nas/tailscale-serve.json, saved as /Volume1/DingFlix-NAS/tailscale/serve.json
+# Tailscale on the NAS: puts DingFlix (the dingflix container on port 8099) on the
+# internet at https://lil-nas-ding.<tailnet>.ts.net through Tailscale Funnel.
+services:
+  tailscale:
+    image: tailscale/tailscale:stable
+    container_name: tailscale
+    network_mode: host
+    environment:
+      - TS_AUTHKEY=PASTE-YOUR-KEY-HERE
+      - TS_HOSTNAME=lil-nas-ding
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/serve.json
+    volumes:
+      - /Volume1/DingFlix-NAS/tailscale-state:/var/lib/tailscale
+      - /Volume1/DingFlix-NAS/tailscale:/config:ro
+    restart: unless-stopped
