@@ -1,6 +1,7 @@
 # DingFlix served from the NAS next to Jellyfin (TerraMaster Docker Manager → Compose).
-# Copy index.html, favicon.svg, css/ and js/ into /Volume1/Media/DingFlix-NAS/site
-# and default.conf into /Volume1/Media/DingFlix-NAS/nginx, then open http://<NAS>:8099
+# Copy index.html, favicon.svg, css/ and js/ into /Volume1/DingFlix-NAS/site
+# default.conf into /Volume1/DingFlix-NAS/nginx and nginx.conf into /Volume1/DingFlix-NAS/main,
+# then open http://<NAS>:8099
 services:
   dingflix:
     image: nginx:1.27-alpine
@@ -8,6 +9,7 @@ services:
     ports:
       - "8099:80"
     volumes:
-      - /Volume1/Media/DingFlix-NAS/site:/usr/share/nginx/html:ro
-      - /Volume1/Media/DingFlix-NAS/nginx:/etc/nginx/conf.d:ro
+      - /Volume1/DingFlix-NAS/site:/usr/share/nginx/html:ro
+      - /Volume1/DingFlix-NAS/nginx:/etc/nginx/conf.d:ro
+      - /Volume1/DingFlix-NAS/main/nginx.conf:/etc/nginx/nginx.conf:ro
     restart: unless-stopped
