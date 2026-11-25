@@ -11,5 +11,6 @@ services:
     volumes:
       - /Volume1/DingFlix-NAS/site:/usr/share/nginx/html:ro
       - /Volume1/DingFlix-NAS/nginx:/etc/nginx/conf.d:ro
-      - /Volume1/DingFlix-NAS/main/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /Volume1/DingFlix-NAS/main:/etc/nginx/main:ro
+    command: ["nginx", "-c", "/etc/nginx/main/nginx.conf", "-g", "daemon off;"]
     restart: unless-stopped
