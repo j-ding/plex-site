@@ -5,7 +5,7 @@ import { jellyfinAuth, shareCode, JellyfinServer } from './jellyfin.js';
 import { rowItems } from './categories.js';
 import { esc, $, $$, store, duration, debounce, sleep } from './util.js';
 import { heroTrailer, initPreviews, canPreview, trailersOn } from './trailers.js';
-import { autoplayOn } from './player.js';
+import { autoplayOn, SUB_LANGUAGES, defaultSubLanguage, fetchSubtitle } from './player.js';
 import { holyarrsAddress, setHolyarrsAddress, forgetHolyarrs, holyarrsLink, holyarrsSearch, holyarrsTitle, holyarrsUp, linkAttrs, DEFAULT_ADDRESS } from './holyarrs.js';
 
 const VIDEO_TYPES = new Set(['movie', 'show', 'season', 'episode']);
@@ -694,10 +694,12 @@ async function langPicker(seq, item, season) {
     if (!target || stale(seq) || box !== $('#lang-pick')) return;
   }
   const part = target.Media?.[0]?.Part?.[0];
-  const streams = part?.Stream || [];
-  const audio = streams.filter(x => x.streamType === STREAM_AUDIO);
-  const subs = streams.filter(x => x.streamType === STREAM_SUB);
-  if (!part || (audio.length < 2 && !subs.length)) return;
+  if (!part) return;
+  let audio = (part.Stream || []).filter(x => x.streamType === STREAM_AUDIO);
+  let subs = (part.Stream || []).filter(x => x.streamType === STREAM_SUB);
+  // Anyone but a share-link guest can fetch subtitles from OpenSubtitles through the server.
+  const canFind = !!s.searchSubtitles && !s.guest;
+  if (audio.length < 2 && !subs.length && !canFind) return;
 
   const name = x => x.displayTitle || x.language || x.title || `Track ${x.index}`;
   const current = list => list.find(x => x.selected);
@@ -724,7 +726,11 @@ async function langPicker(seq, item, season) {
       ${audio.length ? pill('audio', '🔊', 'Audio', a ? name(a) : 'Default',
         audio.map(x => option('audio', x.id, name(x), x === a)).join('')) : ''}
       ${pill('sub', 'CC', 'Subtitles', sub ? name(sub) : 'Off',
-        option('sub', 0, 'Off', !sub) + subs.map(x => option('sub', x.id, name(x), x === sub)).join(''))}
+        option('sub', 0, 'Off', !sub) + subs.map(x => option('sub', x.id, name(x), x === sub)).join('') + (canFind ? `
+          <button class="lp-find" data-find>
+            <span class="lp-check" aria-hidden="true">⬇</span>
+            <span>Find ${esc(langName(defaultSubLanguage()))} subtitles online…${season ? `<small>for ${esc(target.title)}</small>` : ''}</span>
+          </button>` : ''))}
       ${season ? `<span class="lp-note">For every episode</span>` : ''}`;
     box.hidden = false;
   };
@@ -745,6 +751,21 @@ async function langPicker(seq, item, season) {
       box.querySelector('.lp-pop .on')?.focus();
       return;
     }
+    if (e.target.closest('[data-find]')) {
+      open = null;
+      draw();
+      return openSubDialog(target, async ({ added, part: fresh }) => {
+        part.Stream = fresh.Stream;
+        audio = fresh.Stream.filter(x => x.streamType === STREAM_AUDIO);
+        subs = fresh.Stream.filter(x => x.streamType === STREAM_SUB);
+        const pick = subs.find(x => x.id === added.id) || added;
+        // Play the new subtitles: on a show, for this episode and (by language) the rest.
+        await s.selectStreams(part.id, { subtitleStreamID: pick.id }).catch(console.error);
+        if (season) s.selectSeriesStreams(item.ratingKey, { subtitle: pick });
+        subs.forEach(x => (x.selected = x === pick));
+        if (box.isConnected) draw();
+      });
+    }
     const opt = e.target.closest('.lp-opt');
     if (!opt) return;
     const kind = opt.dataset.kind;
@@ -764,6 +785,88 @@ async function langPicker(seq, item, season) {
     box.querySelector(`[data-open="${kind}"]`)?.focus();
   });
   draw();
+}
+
+const langName = code => SUB_LANGUAGES.find(([c]) => c === code)?.[1] || code;
+
+// Search OpenSubtitles (through the server) for a title and download one; done() gets the new track.
+function openSubDialog(target, done) {
+  document.querySelector('.dialog-backdrop')?.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'dialog-backdrop';
+  wrap.innerHTML = `
+    <div class="dialog sub-dialog" role="dialog" aria-label="Find subtitles online">
+      <div class="sub-search-head">
+        <h2>Subtitles for ${esc(target.grandparentTitle ? `${target.grandparentTitle} · ${target.title}` : target.title)}</h2>
+        <select data-lang aria-label="Subtitle language">
+          ${SUB_LANGUAGES.map(([code, n]) => `<option value="${code}">${n}</option>`).join('')}
+        </select>
+      </div>
+      <div class="sub-body"></div>
+      <div class="actions"><button type="button" class="btn" data-close-dialog>Close</button></div>
+    </div>`;
+  document.body.append(wrap);
+  const body = $('.sub-body', wrap);
+  const select = $('[data-lang]', wrap);
+  let results = [];
+  let lang = defaultSubLanguage();
+  let busy = false;
+  select.value = lang;
+
+  const show = (html) => { body.innerHTML = html; };
+  const list = (downloading = null) => show(results.length ? `
+    <p class="muted sub-hint">The first one is usually the best match. It's saved on the server, so everyone gets it.</p>
+    <div class="sub-results">${results.map((r, i) => `
+      <button class="sub-result ${i === 0 ? 'best' : ''}" data-result="${i}" ${downloading != null ? 'disabled' : ''}>
+        <span class="sub-name">${esc(r.title || r.displayTitle || 'Subtitle')}</span>
+        <span class="sub-tags">
+          ${downloading === i ? '<span class="tag good">Downloading…</span>' : ''}
+          ${i === 0 && downloading !== i ? '<span class="tag good">Best match</span>' : ''}
+          ${r.perfectMatch ? '<span class="tag good">Matches your file</span>' : ''}
+          ${r.hearingImpaired ? '<span class="tag">SDH</span>' : ''}
+          <span class="muted">${esc(r.providerTitle || '')}</span>
+        </span>
+      </button>`).join('')}</div>` : `<p class="muted">No ${esc(langName(lang))} subtitles found for this one.</p>`);
+
+  const search = async () => {
+    const asked = lang;
+    show(`<div class="sub-busy"><div class="spinner"></div> Searching for ${esc(langName(lang))} subtitles…</div>`);
+    try {
+      const found = (await state.server.searchSubtitles(target.ratingKey, asked)).slice(0, 20);
+      if (asked !== lang || !wrap.isConnected) return;
+      results = found;
+      list();
+    } catch (err) {
+      if (asked === lang) show(`<p class="error">${esc(`Search failed: ${err.message}`)}</p>`);
+    }
+  };
+
+  select.addEventListener('change', () => {
+    lang = select.value;
+    store.set('subLang', lang);
+    search();
+  });
+  wrap.addEventListener('click', async e => {
+    if (e.target === wrap || e.target.closest('[data-close-dialog]')) return void wrap.remove();
+    const btn = e.target.closest('[data-result]');
+    if (!btn || busy) return;
+    busy = true;
+    const i = Number(btn.dataset.result);
+    list(i);
+    try {
+      const got = await fetchSubtitle(target.ratingKey, target.Media?.[0]?.Part?.[0]?.Stream, results[i], lang);
+      await done(got);
+      wrap.remove();
+      toast(`${langName(lang)} subtitles downloaded and turned on.`);
+    } catch (err) {
+      busy = false;
+      list();
+      body.insertAdjacentHTML('afterbegin', `<p class="error">${esc(`Couldn't download that subtitle: ${err.message}`)}</p>`);
+    }
+  });
+  wrap.addEventListener('keydown', e => { if (e.key === 'Escape') wrap.remove(); });
+  select.focus();
+  search();
 }
 
 async function loadSeason(seq, seasonKey) {

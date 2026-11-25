@@ -973,9 +973,42 @@ a.server { color: inherit; }
 .lp-opt:hover, .lp-opt:focus-visible { background: var(--bg-3); outline: none; }
 .lp-opt.on { color: var(--accent); font-weight: 600; }
 .lp-check { width: 14px; flex: none; }
+.lp-find {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 9px 10px 8px;
+  border: 0;
+  border-top: 1px solid var(--bg-3);
+  border-radius: 0 0 6px 6px;
+  background: none;
+  color: var(--accent);
+  text-align: left;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lp-find:hover, .lp-find:focus-visible { background: var(--bg-3); outline: none; }
+.lp-find small { display: block; color: var(--muted); font-weight: 400; font-size: 12px; }
+.sub-dialog { max-width: 560px; }
+.sub-dialog .sub-search-head { align-items: flex-start; }
+.sub-dialog h2 { margin: 0; font-size: 18px; }
+.sub-dialog .sub-results { max-height: min(360px, 50vh); margin: 0 -8px; }
+.sub-dialog .sub-result.best { background: rgba(242, 165, 22, .08); }
+.sub-dialog .sub-result.best:hover:not(:disabled) { background: rgba(242, 165, 22, .16); }
+.sub-hint { margin: 0 0 8px !important; font-size: 13px !important; }
+.sub-body { min-height: 60px; }
+.sub-body p { font-size: 14px; }
+.sub-dialog .actions { margin-top: 14px; justify-content: flex-end; }
+@media (max-width: 760px) {
+  .sub-dialog .sub-search-head { flex-direction: column; }
+}
 @media (max-width: 760px) {
   .lp-item { flex: 1 1 140px; min-width: 0; }
   .lp-pill { width: 100%; max-width: none; }
+  .lp-item:last-of-type:not(:first-of-type) .lp-pop { left: auto; right: 0; }
 }
 
 /* ---------- quality labels, skip intro, previews, sign-in codes ---------- */

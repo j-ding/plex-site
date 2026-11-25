@@ -17,7 +17,7 @@ const SUB_SIZES = [
 ];
 const AUDIO = 2;
 const SUBTITLE = 3;
-const SUB_LANGUAGES = [
+export const SUB_LANGUAGES = [
   ['en', 'English'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['it', 'Italian'],
   ['pt', 'Portuguese'], ['nl', 'Dutch'], ['sv', 'Swedish'], ['pl', 'Polish'], ['ru', 'Russian'],
   ['tr', 'Turkish'], ['ar', 'Arabic'], ['he', 'Hebrew'], ['hi', 'Hindi'], ['ja', 'Japanese'],
@@ -30,7 +30,7 @@ export const setAutoplay = on => store.set('autoplay', !!on);
 const COUNTDOWN = 10;
 const GUESS_CREDITS = 25; // seconds before the end, for episodes with no credits data
 
-function defaultSubLanguage() {
+export function defaultSubLanguage() {
   const saved = store.get('subLang');
   if (saved) return saved;
   const browser = (navigator.language || 'en').slice(0, 2).toLowerCase();
@@ -343,25 +343,30 @@ async function searchSubtitles(c, lang) {
   if (ctx === c && c.subSearch === search) renderTracks(c);
 }
 
+// Asks the server to download an online subtitle, then waits for the new track to
+// appear on the file (the server fetches it in the background).
+export async function fetchSubtitle(ratingKey, streams, result, lang) {
+  const before = new Set((streams || []).filter(s => s.streamType === SUBTITLE).map(s => s.id));
+  await state.server.downloadSubtitle(ratingKey, result, lang);
+  for (let tries = 0; tries < 15; tries++) {
+    const part = (await state.server.metadata(ratingKey)).Media?.[0]?.Part?.[0];
+    const added = part?.Stream?.find(s => s.streamType === SUBTITLE && !before.has(s.id));
+    if (added) return { added, part };
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  throw new Error('the server did not add it');
+}
+
 async function downloadSubtitle(c, index) {
   const search = c.subSearch;
   if (!search || search.downloading != null) return;
   search.downloading = index;
   search.error = null;
   renderTracks(c);
-  const before = new Set(streamsOf(c, SUBTITLE).map(s => s.id));
   try {
-    await state.server.downloadSubtitle(c.item.ratingKey, search.results[index], search.lang);
-    // The server fetches it in the background; wait for the new track to appear.
-    let added;
-    for (let tries = 0; tries < 15 && !added; tries++) {
-      const part = (await state.server.metadata(c.item.ratingKey)).Media?.[0]?.Part?.[0];
-      added = part?.Stream?.find(s => s.streamType === SUBTITLE && !before.has(s.id));
-      if (added) c.part.Stream = part.Stream;
-      else await new Promise(r => setTimeout(r, 1000));
-    }
+    const { added, part } = await fetchSubtitle(c.item.ratingKey, c.part.Stream, search.results[index], search.lang);
     if (ctx !== c) return;
-    if (!added) throw new Error('the server did not add it');
+    c.part.Stream = part.Stream;
     c.subSearch = null;
     c.closePanel();
     await selectTrack(c, 'sub', added.id, { force: true });
