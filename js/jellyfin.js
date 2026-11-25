@@ -276,7 +276,7 @@ export class JellyfinServer {
         audioCodec: audio?.Codec,
         videoResolution: resolutionOf(video),
         hdr: hdrOf(video),
-        Part: [{ id: i.Id, mediaSourceId: source.Id, Stream: this.toStreams(i.Id, source) }],
+        Part: [{ id: i.Id, mediaSourceId: source.Id, Stream: this.toStreams(i.Id, source, type === 'episode' && i.SeriesId) }],
       }];
       // Preview pictures for scrubbing, if Jellyfin has made them (one sheet holds a grid of frames).
       const sizes = i.Trickplay?.[source.Id] || Object.values(i.Trickplay || {})[0];
@@ -291,10 +291,28 @@ export class JellyfinServer {
     return item;
   }
 
-  toStreams(itemId, source) {
-    const choice = store.get(`jfTracks.${itemId}`) || {};
-    const defaultAudio = choice.audio ?? source.DefaultAudioStreamIndex;
+  toStreams(itemId, source, seriesId) {
     const streams = source.MediaStreams || [];
+    const choice = { ...(store.get(`jfTracks.${itemId}`) || {}) };
+    // An episode follows the languages picked for the whole show, unless it was given
+    // its own track (in the player) more recently than that.
+    const pref = seriesId && store.get(`jfTracks.series.${seriesId}`);
+    if (pref) {
+      const match = (type, want) => {
+        const list = streams.filter(s => s.Type === type && s.Language === want.lang);
+        return list.find(s => !!s.IsForced === !!want.forced && !!s.IsHearingImpaired === !!want.sdh)
+          || list.find(s => !!s.IsForced === !!want.forced) || list[0];
+      };
+      if (pref.audio && !((choice.audioAt || 0) > (pref.audioAt || 0) && 'audio' in choice)) {
+        const a = match('Audio', pref.audio);
+        if (a) choice.audio = a.Index;
+      }
+      if ('subtitle' in pref && !((choice.subtitleAt || 0) > (pref.subtitleAt || 0) && 'subtitle' in choice)) {
+        const s = pref.subtitle && match('Subtitle', pref.subtitle);
+        if (!pref.subtitle || s) choice.subtitle = s ? s.Index : null;
+      }
+    }
+    const defaultAudio = choice.audio ?? source.DefaultAudioStreamIndex;
     // Until they pick (or turn off) subtitles on this device, do what Jellyfin's own
     // apps do: its default track (forced subtitles, such as translations of the bits
     // in another language), else a forced track in the audio's language.
@@ -326,6 +344,7 @@ export class JellyfinServer {
           displayTitle: label,
           title: s.Title,
           forced: s.IsForced,
+          hearingImpaired: s.IsHearingImpaired,
           selected: streamType === 2 ? s.Index === defaultAudio : streamType === 3 ? s.Index === defaultSub : false,
         };
       });
@@ -566,9 +585,20 @@ export class JellyfinServer {
   // Jellyfin doesn't store track choices per file, so remember them on this device.
   async selectStreams(itemId, ids) {
     const choice = store.get(`jfTracks.${itemId}`) || {};
-    if ('audioStreamID' in ids) choice.audio = ids.audioStreamID;
-    if ('subtitleStreamID' in ids) choice.subtitle = ids.subtitleStreamID || null;
+    if ('audioStreamID' in ids) Object.assign(choice, { audio: ids.audioStreamID, audioAt: Date.now() });
+    if ('subtitleStreamID' in ids) Object.assign(choice, { subtitle: ids.subtitleStreamID || null, subtitleAt: Date.now() });
     store.set(`jfTracks.${itemId}`, choice);
+  }
+
+  // Languages for every episode of a show, matched by language (and forced/SDH) since
+  // track numbers differ between files. Pass a stream to choose it, or null for subtitles off.
+  selectSeriesStreams(seriesId, { audio, subtitle }) {
+    const key = `jfTracks.series.${seriesId}`;
+    const pref = store.get(key) || {};
+    const want = s => ({ lang: s.languageCode, forced: !!s.forced, sdh: !!s.hearingImpaired });
+    if (audio) Object.assign(pref, { audio: want(audio), audioAt: Date.now() });
+    if (subtitle !== undefined) Object.assign(pref, { subtitle: subtitle ? want(subtitle) : null, subtitleAt: Date.now() });
+    store.set(key, pref);
   }
 
   /* --- playback --- */

@@ -639,6 +639,7 @@ export async function title(seq, id, params) {
           ${owner ? `<button class="btn" data-action="hide" data-key="${esc(id)}" data-title="${esc(item.title)}">${hiddenFrom.length ? '⊘ Hidden' : '⊘ Hide'}</button>` : ''}
           ${findMore ? `<a class="btn" href="${esc(findMore)}" ${linkAttrs} title="Open this ${isShow ? 'show' : 'movie'} in HolyArrs">HolyArrs ↗</a>` : ''}
         </div>
+        <div class="lang-pick" id="lang-pick" hidden></div>
         ${resume ? `<div class="resume"><div class="progress"><span style="width:${((resume / item.duration) * 100).toFixed(1)}%"></span></div><small>${duration(item.duration - resume)} left</small></div>` : ''}
       </div>
     </section>
@@ -663,6 +664,7 @@ export async function title(seq, id, params) {
       </section>` : ''}
     <div class="rows">${hubRows(related)}</div>`)) return;
   heroTrailer($('.title-hero'), id);
+  langPicker(seq, item, isShow ? seasons.find(x => String(x.ratingKey) === String(current)) : null);
 
   if (isShow && seasons.length) {
     const select = $('#season');
@@ -673,6 +675,95 @@ export async function title(seq, id, params) {
     });
     loadSeason(seq, current);
   }
+}
+
+/* Audio and subtitle choice on the title page, before pressing play. A movie's choice is
+   saved for that file; on Jellyfin a show's choice is saved as languages for every episode. */
+const STREAM_AUDIO = 2;
+const STREAM_SUB = 3;
+
+async function langPicker(seq, item, season) {
+  const box = $('#lang-pick');
+  const s = state.server;
+  let target = item;
+  if (season) {
+    if (!s.selectSeriesStreams) return;
+    const eps = await s.children(season.ratingKey).catch(() => []);
+    const next = eps.find(e => e.viewOffset || !e.viewCount) || eps[0];
+    target = next && (await s.metadata(next.ratingKey).catch(() => null));
+    if (!target || stale(seq) || box !== $('#lang-pick')) return;
+  }
+  const part = target.Media?.[0]?.Part?.[0];
+  const streams = part?.Stream || [];
+  const audio = streams.filter(x => x.streamType === STREAM_AUDIO);
+  const subs = streams.filter(x => x.streamType === STREAM_SUB);
+  if (!part || (audio.length < 2 && !subs.length)) return;
+
+  const name = x => x.displayTitle || x.language || x.title || `Track ${x.index}`;
+  const current = list => list.find(x => x.selected);
+  let open = null;
+
+  const option = (kind, id, label, on) => `
+    <button class="lp-opt ${on ? 'on' : ''}" role="menuitemradio" aria-checked="${on}" data-kind="${kind}" data-id="${esc(id)}">
+      <span class="lp-check">${on ? '✓' : ''}</span><span>${esc(label)}</span>
+    </button>`;
+  const pill = (kind, icon, label, value, list) => `
+    <div class="lp-item">
+      <button class="lp-pill ${open === kind ? 'open' : ''}" data-open="${kind}" aria-haspopup="menu" aria-expanded="${open === kind}">
+        <span class="lp-icon" aria-hidden="true">${icon}</span>
+        <span class="lp-text"><small>${label}</small><span>${esc(value)}</span></span>
+        <span class="lp-caret" aria-hidden="true">▾</span>
+      </button>
+      ${open === kind ? `<div class="lp-pop" role="menu">${list}</div>` : ''}
+    </div>`;
+
+  const draw = () => {
+    const a = current(audio) || audio[0];
+    const sub = current(subs);
+    box.innerHTML = `
+      ${audio.length ? pill('audio', '🔊', 'Audio', a ? name(a) : 'Default',
+        audio.map(x => option('audio', x.id, name(x), x === a)).join('')) : ''}
+      ${pill('sub', 'CC', 'Subtitles', sub ? name(sub) : 'Off',
+        option('sub', 0, 'Off', !sub) + subs.map(x => option('sub', x.id, name(x), x === sub)).join(''))}
+      ${season ? `<span class="lp-note">For every episode</span>` : ''}`;
+    box.hidden = false;
+  };
+
+  const outside = e => {
+    if (!box.isConnected) return void document.removeEventListener('pointerdown', outside);
+    if (open && !box.contains(e.target)) { open = null; draw(); }
+  };
+  document.addEventListener('pointerdown', outside);
+  box.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && open) { open = null; draw(); box.querySelector('.lp-pill')?.focus(); }
+  });
+  box.addEventListener('click', async e => {
+    const toggle = e.target.closest('[data-open]');
+    if (toggle) {
+      open = open === toggle.dataset.open ? null : toggle.dataset.open;
+      draw();
+      box.querySelector('.lp-pop .on')?.focus();
+      return;
+    }
+    const opt = e.target.closest('.lp-opt');
+    if (!opt) return;
+    const kind = opt.dataset.kind;
+    const list = kind === 'audio' ? audio : subs;
+    const pick = list.find(x => String(x.id) === opt.dataset.id) || null;
+    open = null;
+    try {
+      if (season) s.selectSeriesStreams(item.ratingKey, kind === 'audio' ? { audio: pick } : { subtitle: pick });
+      else await s.selectStreams(part.id, kind === 'audio' ? { audioStreamID: pick.id } : { subtitleStreamID: pick ? pick.id : 0 });
+    } catch (err) {
+      console.error(err);
+      toast("Couldn't save that choice.");
+      return draw();
+    }
+    list.forEach(x => (x.selected = x === pick));
+    draw();
+    box.querySelector(`[data-open="${kind}"]`)?.focus();
+  });
+  draw();
 }
 
 async function loadSeason(seq, seasonKey) {
