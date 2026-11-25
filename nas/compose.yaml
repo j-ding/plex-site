@@ -1,7 +1,6 @@
 # DingFlix served from the NAS next to Jellyfin (TerraMaster Docker Manager → Compose).
 # Copy index.html, favicon.svg, css/ and js/ into /Volume1/DingFlix-NAS/site
-# default.conf into /Volume1/DingFlix-NAS/nginx and nginx.conf into /Volume1/DingFlix-NAS/main,
-# then open http://<NAS>:8099
+# and default.conf into /Volume1/DingFlix-NAS/nginx, then open http://<NAS>:8099
 services:
   dingflix:
     image: nginx:1.27-alpine
@@ -11,6 +10,6 @@ services:
     volumes:
       - /Volume1/DingFlix-NAS/site:/usr/share/nginx/html:ro
       - /Volume1/DingFlix-NAS/nginx:/etc/nginx/conf.d:ro
-      - /Volume1/DingFlix-NAS/main:/etc/nginx/main:ro
-    command: ["nginx", "-c", "/etc/nginx/main/nginx.conf", "-g", "daemon off;"]
+    # Workers run as root so they can read the files whatever permissions the share has.
+    command: ["sh", "-c", "sed -i 's/^user .*;/user root;/' /etc/nginx/nginx.conf && exec nginx -g 'daemon off;'"]
     restart: unless-stopped
