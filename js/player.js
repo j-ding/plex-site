@@ -58,6 +58,8 @@ export async function openPlayer(ratingKey, { fromStart = false, at = null } = {
     </div>
     <div class="tracks" role="dialog" aria-label="Audio and subtitles" hidden></div>
     <div class="player-status"></div>
+    <button class="btn skip-btn" data-skip hidden>Skip intro ›</button>
+    <div class="trickplay" hidden><div class="tp-frame"><img crossorigin="anonymous" alt=""></div><span class="tp-time"></span></div>
     <div class="upnext" hidden></div>`;
   root.hidden = false;
   document.body.classList.add('player-open');
@@ -93,6 +95,7 @@ export async function openPlayer(ratingKey, { fromStart = false, at = null } = {
     renderTracks(c);
     load(c, at ?? (fromStart ? 0 : (item.viewOffset || 0) / 1000));
     findNext(c);
+    findIntro(c);
   } catch (err) {
     if (ctx === c) setStatus(c, 'error', err.message);
   }
@@ -421,6 +424,31 @@ function bindUi(c) {
 
   $('.player-bar [data-close]', root).onclick = () => leave(c);
   $('[data-next]', root).onclick = () => c.next && goTo(c.next.ratingKey);
+  $('[data-skip]', root).onclick = e => {
+    e.stopPropagation();
+    if (!c.intro) return;
+    c.quietSeek = true; // no preview picture for this jump
+    video.currentTime = c.intro.end;
+    e.currentTarget.hidden = true;
+  };
+  // While someone drags through the video (or skips with the arrow keys), show the
+  // frame at that point, from the preview pictures Jellyfin makes ("trickplay").
+  let tpHide = null;
+  video.addEventListener('seeking', () => {
+    if (c.quietSeek) {
+      c.quietSeek = false;
+      $('.trickplay', root).hidden = true;
+      return;
+    }
+    const tp = c.item?.trickplay;
+    if (!tp || !video.duration) return;
+    showPreview(c, tp, video.currentTime);
+    clearTimeout(tpHide);
+  });
+  video.addEventListener('seeked', () => {
+    clearTimeout(tpHide);
+    tpHide = setTimeout(() => ($('.trickplay', root).hidden = true), 700);
+  });
   $('[data-tracks]', root).onclick = e => {
     e.stopPropagation();
     togglePanel();
@@ -479,6 +507,10 @@ function bindUi(c) {
     if (c.next && c.upnext !== 'credits') upNext(c);
   });
   video.addEventListener('timeupdate', () => {
+    // "Skip intro" shows while the intro plays (not in its last couple of seconds).
+    const intro = c.intro;
+    const skip = $('[data-skip]', root);
+    if (skip) skip.hidden = !(intro && video.currentTime >= intro.start && video.currentTime < intro.end - 2);
     const start = creditsStart(c);
     if (!c.next || !c.started || start == null) return;
     const t = video.currentTime;
@@ -554,6 +586,40 @@ async function findNext(c) {
     if (ctx === c && credits) c.creditsAt = credits / 1000;
   } catch {}
 }
+
+async function findIntro(c) {
+  try {
+    const r = c.item.introRange ?? (await state.server.introRange?.(c.item));
+    if (ctx === c && r && r.end > r.start) c.intro = { start: r.start / 1000, end: r.end / 1000 };
+  } catch {}
+}
+
+function showPreview(c, tp, seconds) {
+  const box = $('.trickplay', c.root);
+  const img = $('img', box);
+  const n = Math.min(tp.count - 1, Math.floor((seconds * 1000) / tp.interval));
+  const perSheet = tp.cols * tp.rows;
+  const at = n % perSheet;
+  const scale = 240 / tp.width;
+  const src = tp.sheet(Math.floor(n / perSheet));
+  if (img.getAttribute('src') !== src) img.src = src;
+  img.style.width = `${tp.cols * tp.width * scale}px`;
+  img.style.transform = `translate(${-(at % tp.cols) * tp.width * scale}px, ${-Math.floor(at / tp.cols) * tp.height * scale}px)`;
+  $('.tp-frame', box).style.height = `${tp.height * scale}px`;
+  $('.tp-time', box).textContent = clockTime(seconds);
+  // Over the point in the timeline, kept on screen.
+  const pct = seconds / c.video.duration;
+  const half = 120 + 12;
+  box.style.left = `${Math.min(c.root.clientWidth - half, Math.max(half, pct * c.root.clientWidth))}px`;
+  box.hidden = false;
+}
+
+const clockTime = s => {
+  s = Math.max(0, Math.floor(s));
+  const h = Math.floor(s / 3600);
+  const m = String(Math.floor((s % 3600) / 60)).padStart(h ? 2 : 1, '0');
+  return `${h ? `${h}:` : ''}${m}:${String(s % 60).padStart(2, '0')}`;
+};
 
 // Seconds into the video where the credits start. Without credits data, episodes
 // guess the last 25 seconds; movies wait for the end (their credits vary too much).

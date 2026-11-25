@@ -3,7 +3,7 @@ import { state, setServer, setProfile, getSections, viewerToken, isAdmin } from 
 import { auth, connect, PlexServer } from './plex.js';
 import { jellyfinAuth, shareCode, JellyfinServer } from './jellyfin.js';
 import { rowItems } from './categories.js';
-import { esc, $, $$, store, duration, debounce } from './util.js';
+import { esc, $, $$, store, duration, debounce, sleep } from './util.js';
 import { heroTrailer, initPreviews, canPreview, trailersOn } from './trailers.js';
 import { autoplayOn } from './player.js';
 import { holyarrsAddress, setHolyarrsAddress, forgetHolyarrs, holyarrsLink, holyarrsSearch, holyarrsTitle, holyarrsUp, linkAttrs, DEFAULT_ADDRESS } from './holyarrs.js';
@@ -79,6 +79,7 @@ export async function renderHeader() {
           ${state.userToken || jellyfin ? `<a href="#/profiles">Switch profile</a>` : ''}
           <a href="#/connect?pick=1">Switch server</a>
           ${siteLink() ? `<button data-action="share-site">Share DingFlix link</button>` : ''}
+          ${jellyfin && !state.server.guest ? `<button data-action="approve-device">Sign in another device</button>` : ''}
           <button data-action="toggle-autoplay">${autoplayMenuLabel()}</button>
           ${canPreview() ? `<button data-action="toggle-trailers">${trailerMenuLabel()}</button>` : ''}
           <button data-action="signout">Sign out</button>
@@ -134,6 +135,58 @@ export function siteLink() {
   if (s?.kind !== 'jellyfin' || !s.admin || s.guest) return '';
   const address = s.linkAddress();
   return JellyfinServer.isPrivate(address) ? '' : `${new URL(address).origin}/`;
+}
+
+// Where to send people for a link to this DingFlix (watch-party invites): this page,
+// unless it's a home-network address and a public one is saved.
+export function siteBase() {
+  const here = location.href.split('#')[0];
+  const s = state.server;
+  const address = s?.kind === 'jellyfin' ? s.linkAddress?.() : null;
+  if (!JellyfinServer.isPrivate(here) || !address || JellyfinServer.isPrivate(address)) return here;
+  return `${new URL(address).origin}/`;
+}
+
+// Approve a Quick Connect code another device is showing: it gets signed in as you.
+export function openApproveDialog() {
+  document.querySelector('.dialog-backdrop')?.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'dialog-backdrop';
+  wrap.innerHTML = `
+    <form class="dialog" role="dialog" aria-label="Sign in another device">
+      <h2>Sign in another device</h2>
+      <p class="muted">On the other device, choose <strong>Use a code</strong> on the “Who’s watching?” screen, then type the code it shows here. It will be signed in as <strong>${esc(state.server.userName)}</strong>.</p>
+      <input name="code" class="code-input" maxlength="10" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" required aria-label="Code">
+      <div class="dialog-result"></div>
+      <div class="actions">
+        <button class="btn accent">Sign it in</button>
+        <button type="button" class="btn" data-close-dialog>Close</button>
+      </div>
+    </form>`;
+  document.body.append(wrap);
+  const form = $('.dialog', wrap);
+  form.code.focus();
+  wrap.addEventListener('click', e => {
+    if (e.target === wrap || e.target.closest('[data-close-dialog]')) wrap.remove();
+  });
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const button = form.querySelector('button.accent');
+    button.disabled = true;
+    try {
+      await state.server.approveCode(form.code.value);
+      wrap.remove();
+      toast('Done. The other device is signing in.');
+    } catch (err) {
+      button.disabled = false;
+      const msg = err.status === 404 || err.status === 400
+        ? 'That code didn’t work. Check it, or get a new one on the other device.'
+        : err.status === 403 || err.status === 401
+          ? 'Quick Connect is turned off on the server (Dashboard → General → Quick Connect).'
+          : `Couldn't approve it: ${err.message}`;
+      $('.dialog-result', form).innerHTML = `<p class="error">${esc(msg)}</p>`;
+    }
+  });
 }
 
 export async function copyText(text, done = 'Link copied.') {
@@ -230,6 +283,17 @@ function cardInfo(item, landscape) {
   }
 }
 
+// "4K", "Dolby Vision"/"HDR" labels from the file (movies and episodes).
+export function qualityTags(item) {
+  const m = item?.Media?.[0];
+  if (!m) return [];
+  const tags = [];
+  if (m.videoResolution === '4k') tags.push('4K');
+  if (m.hdr === 'DV') tags.push('DV');
+  else if (m.hdr) tags.push('HDR');
+  return tags;
+}
+
 function card(item, { landscape = false, resume = false } = {}) {
   const info = cardInfo(item, landscape);
   if (resume) info.href = `#/watch/${item.ratingKey}`;
@@ -249,6 +313,7 @@ function card(item, { landscape = false, resume = false } = {}) {
         ${pct ? `<div class="progress"><span style="width:${pct.toFixed(1)}%"></span></div>` : ''}
         ${unwatched > 0 ? `<span class="badge">${unwatched}</span>` : ''}
         ${watched && !item.friend ? `<span class="badge" aria-label="Watched">✓</span>` : ''}
+        ${qualityTags(item).length ? `<span class="q-tags">${qualityTags(item).map(t => `<span>${t}</span>`).join('')}</span>` : ''}
         ${item.friend ? `<span class="join-badge">${item.friend.dingflix ? 'Join' : 'Watch too'}</span>` : ''}
       </div>
       <div class="card-text">
@@ -287,6 +352,7 @@ function metaLine(item) {
   if (item.contentRating) parts.push(`<span class="pill">${esc(item.contentRating)}</span>`);
   if (item.type === 'movie' && item.duration) parts.push(duration(item.duration));
   if (item.type === 'show' && item.childCount) parts.push(`${item.childCount} season${item.childCount > 1 ? 's' : ''}`);
+  for (const t of qualityTags(item)) parts.push(`<span class="pill q-pill">${t === 'DV' ? 'Dolby Vision' : t}</span>`);
   const score = item.audienceRating ?? item.rating;
   if (score) parts.push(`★ ${Number(score).toFixed(1)}`);
   return parts.join('<span class="sep">·</span>');
@@ -1916,9 +1982,9 @@ export async function jellyfinView(seq, params) {
   }
 
   mount(seq, shell(loading()));
-  let info, people;
+  let info, people, quick;
   try {
-    [info, people] = await Promise.all([jellyfinAuth.info(uri), jellyfinAuth.publicUsers(uri).catch(() => [])]);
+    [info, people, quick] = await Promise.all([jellyfinAuth.info(uri), jellyfinAuth.publicUsers(uri).catch(() => []), jellyfinAuth.quickConnectOn(uri)]);
   } catch {
     if (!stale(seq)) renderJellyfinAddress(seq, uri, `Couldn't reach a Jellyfin server at ${uri}. Check the address and that the server is running.`);
     return;
@@ -1951,6 +2017,11 @@ export async function jellyfinView(seq, params) {
             <span class="profile-pic">?</span>
             <span class="profile-name">Someone else</span>
           </button>
+          ${quick ? `
+            <button class="profile add" data-code>
+              <span class="profile-pic">#</span>
+              <span class="profile-name">Use a code</span>
+            </button>` : ''}
           ${canAdd ? `
             <button class="profile add" data-add>
               <span class="profile-pic">+</span>
@@ -1971,6 +2042,7 @@ export async function jellyfinView(seq, params) {
     if (!b || b.disabled || $('.pin-box')) return;
     if (b.hasAttribute('data-add')) return void jellyfinAddProfile({ uri, info });
     if (b.hasAttribute('data-other')) return void signIn('', true);
+    if (b.hasAttribute('data-code')) return void jellyfinQuickConnect({ uri, info, seq });
     const p = people[b.dataset.i];
     if (saved[p.Id]) return void jellyfinResume({ uri, info, account: saved[p.Id], button: b, fallback: () => signIn(p.Name, true) });
     if (p.HasPassword) signIn(p.Name, true);
@@ -2017,6 +2089,55 @@ function jellyfinSignInForm({ uri, info, name, askName, askPassword }) {
     const pass = form.querySelector('[name=pass]')?.value || '';
     jellyfinLogin({ uri, info, name: user, password: pass, form, remember: form.querySelector('[name=remember]').checked });
   });
+}
+
+// Quick Connect: show a code, wait for someone signed in elsewhere to approve it.
+async function jellyfinQuickConnect({ uri, info, seq }) {
+  const error = $('#connect-error');
+  error.textContent = '';
+  if ($('.pin-box')) return;
+  let start;
+  try {
+    start = await jellyfinAuth.quickConnectStart(uri);
+  } catch (err) {
+    error.textContent = `Couldn't get a code: ${err.message}`;
+    return;
+  }
+  const box = document.createElement('div');
+  box.className = 'pin-box';
+  box.innerHTML = `
+    <p>Your code</p>
+    <div class="qc-code">${esc(start.Code)}</div>
+    <p class="muted qc-help">On a phone or computer where you're signed in to DingFlix, open the account menu → <strong>Sign in another device</strong> and enter this code. Jellyfin's own apps can approve it too, under Quick Connect.</p>
+    <p class="muted qc-wait">Waiting for it to be approved…</p>
+    <div class="actions"><button type="button" class="btn" data-cancel>Cancel</button></div>`;
+  $('.profiles').append(box);
+  let stopped = false;
+  box.querySelector('[data-cancel]').addEventListener('click', () => {
+    stopped = true;
+    box.remove();
+  });
+  for (let i = 0; i < 100; i++) {
+    await sleep(3000);
+    if (stopped || stale(seq)) return;
+    const check = await jellyfinAuth.quickConnectCheck(uri, start.Secret).catch(err => (err.status === 404 ? { expired: true } : null));
+    if (check?.expired) break;
+    if (!check?.Authenticated) continue;
+    try {
+      const session = await jellyfinAuth.quickConnectLogin(uri, start.Secret);
+      const cfg = jellyfinAuth.serverConfig(uri, info, session);
+      setServer(cfg);
+      rememberAccount(cfg);
+      location.hash = '#/';
+    } catch (err) {
+      error.textContent = `Couldn't sign in: ${err.message}`;
+    }
+    return;
+  }
+  if (!stopped && !stale(seq)) {
+    box.remove();
+    error.textContent = 'That code expired. Choose Use a code to get a new one.';
+  }
 }
 
 // Signs in with a remembered account, no password. If the server no longer accepts

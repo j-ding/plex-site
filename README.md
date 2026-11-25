@@ -38,6 +38,16 @@ touches it.
   are; after that playback stays in sync (anyone can pause, play or skip, and
   everyone follows to the next episode) and a chat sits beside the video (under
   it on phones). The owner turns it on in Manage → Watch together.
+- Skip intro: a button while the intro plays (Jellyfin media segments from a
+  plugin such as Intro Skipper, or Plex's intro markers)
+- Preview pictures while you drag through a video or skip with the arrow keys,
+  from Jellyfin's trickplay images (turn them on per library in Jellyfin)
+- 4K, HDR and Dolby Vision labels on posters and title pages (Jellyfin)
+- Sign in with a code (Jellyfin Quick Connect): a new device shows a code under
+  "Use a code", and anyone signed in approves it from the account menu → Sign in
+  another device
+- Watch together extras: start a party yourself and copy an Invite link, and
+  send emoji reactions that float over everyone's video
 - Search across all libraries
 - **Manage** tab for the server owner: everyone with access, what they've
   finished watching, who's watching right now, and buttons to remove someone's

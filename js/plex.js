@@ -381,6 +381,8 @@ export class PlexServer {
     // Plex detects end credits (Plex Pass); the player uses this for "up next".
     const credits = (item.Marker || []).filter(m => m.type === 'credits').map(m => m.startTimeOffset).sort((a, b) => a - b)[0];
     if (credits) item.creditsAt = credits;
+    const intro = (item.Marker || []).find(m => m.type === 'intro');
+    if (intro) item.introRange = { start: intro.startTimeOffset, end: intro.endTimeOffset };
     return item;
   }
 

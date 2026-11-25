@@ -29,6 +29,21 @@ const LANG3 = {
   tr: 'tur', ar: 'ara', he: 'heb', hi: 'hin', ja: 'jpn', ko: 'kor', zh: 'chi', vi: 'vie', th: 'tha', id: 'ind',
 };
 
+// "4k", "1080" and so on, like Plex's videoResolution.
+const resolutionOf = v => {
+  if (!v?.Width) return undefined;
+  if (v.Width >= 3200 || v.Height >= 2000) return '4k';
+  if (v.Width >= 1800 || v.Height >= 1000) return '1080';
+  if (v.Width >= 1200 || v.Height >= 700) return '720';
+  return 'sd';
+};
+const hdrOf = v => {
+  const range = `${v?.VideoRangeType || ''} ${v?.VideoRange || ''}`;
+  if (/DOVI/i.test(range)) return 'DV';
+  if (/HDR|HLG/i.test(range)) return 'HDR';
+  return null;
+};
+
 const languageName = code => {
   if (!code || code === 'und') return '';
   try {
@@ -80,6 +95,11 @@ export const jellyfinAuth = {
   },
   info(uri) { return request(uri, '/System/Info/Public', { timeout: 8000 }); },
   publicUsers(uri) { return request(uri, '/Users/Public'); },
+  // Quick Connect: a new device shows a code, someone signed in approves it.
+  quickConnectOn(uri) { return request(uri, '/QuickConnect/Enabled', { timeout: 8000 }).then(Boolean).catch(() => false); },
+  quickConnectStart(uri) { return request(uri, '/QuickConnect/Initiate', { method: 'POST' }); },
+  quickConnectCheck(uri, secret) { return request(uri, '/QuickConnect/Connect', { params: { secret } }); },
+  quickConnectLogin(uri, secret) { return request(uri, '/Users/AuthenticateWithQuickConnect', { method: 'POST', json: { Secret: secret } }); },
   // Who a saved sign-in belongs to; fails with 401 once it's been signed out or revoked.
   me(uri, token) { return request(uri, '/Users/Me', { token, timeout: 10000 }); },
   login(uri, username, password) {
@@ -254,8 +274,19 @@ export class JellyfinServer {
         container: source.Container,
         videoCodec: video?.Codec,
         audioCodec: audio?.Codec,
+        videoResolution: resolutionOf(video),
+        hdr: hdrOf(video),
         Part: [{ id: i.Id, mediaSourceId: source.Id, Stream: this.toStreams(i.Id, source) }],
       }];
+      // Preview pictures for scrubbing, if Jellyfin has made them (one sheet holds a grid of frames).
+      const sizes = i.Trickplay?.[source.Id] || Object.values(i.Trickplay || {})[0];
+      const t = sizes && Object.values(sizes).sort((a, b) => Math.abs(a.Width - 320) - Math.abs(b.Width - 320))[0];
+      if (t?.Interval && t.ThumbnailCount) {
+        item.trickplay = {
+          width: t.Width, height: t.Height, cols: t.TileWidth, rows: t.TileHeight, interval: t.Interval, count: t.ThumbnailCount,
+          sheet: n => this.url(`/Videos/${i.Id}/Trickplay/${t.Width}/${n}.jpg`, { mediaSourceId: source.Id }),
+        };
+      }
     }
     return item;
   }
@@ -455,7 +486,7 @@ export class JellyfinServer {
   }
 
   async metadata(id) {
-    const item = await this.api(`/Items/${id}`, { params: { userId: this.userId, Fields: `${ITEM_FIELDS},RemoteTrailers,ProviderIds,Tags,Chapters` } }).catch(err => {
+    const item = await this.api(`/Items/${id}`, { params: { userId: this.userId, Fields: `${ITEM_FIELDS},RemoteTrailers,ProviderIds,Tags,Chapters,Trickplay` } }).catch(err => {
       if (err.status === 404) throw new Error('That title is no longer on the server.');
       throw err;
     });
@@ -488,9 +519,28 @@ export class JellyfinServer {
 
   // When the end credits start (ms): Jellyfin's media segments (from a plugin such
   // as Intro Skipper), else a chapter called "Credits" or similar in the second half.
+  // Intro and credits markers (ms) from Jellyfin's media segments, fetched once per title.
+  segments(item) {
+    this.segmentCache ??= new Map();
+    if (!this.segmentCache.has(item.ratingKey)) {
+      this.segmentCache.set(item.ratingKey, this.api(`/MediaSegments/${item.ratingKey}`, { params: { includeSegmentTypes: 'Intro,Outro' } })
+        .then(r => {
+          const list = (r?.Items || []).map(x => ({ type: x.Type, start: ms(x.StartTicks) || 0, end: ms(x.EndTicks) || 0 }));
+          const intro = list.find(x => x.type === 'Intro' && x.end > x.start);
+          const outro = list.filter(x => x.type === 'Outro' && x.start).sort((a, b) => a.start - b.start)[0];
+          return { intro: intro ? { start: intro.start, end: intro.end } : null, outro: outro?.start || null };
+        })
+        .catch(() => ({ intro: null, outro: null })));
+    }
+    return this.segmentCache.get(item.ratingKey);
+  }
+
+  async introRange(item) {
+    return (await this.segments(item)).intro;
+  }
+
   async creditsStart(item) {
-    const r = await this.api(`/MediaSegments/${item.ratingKey}`, { params: { includeSegmentTypes: 'Outro' } }).catch(() => null);
-    const outro = (r?.Items || []).map(x => ms(x.StartTicks)).filter(Boolean).sort((a, b) => a - b)[0];
+    const { outro } = await this.segments(item);
     if (outro) return outro;
     const half = (item.duration || 0) / 2;
     return (item.chapters || []).find(c => c.start > half && /credits|outro|ending/i.test(c.name))?.start ?? null;
@@ -653,6 +703,11 @@ export class JellyfinServer {
   async mySessionId() {
     const list = await this.api('/Sessions', { params: { deviceId: clientId() } });
     return (list || []).find(x => x.UserId === this.userId)?.Id || null;
+  }
+
+  // Approves a Quick Connect code shown on another device, signing it in as this account.
+  approveCode(code) {
+    return this.api('/QuickConnect/Authorize', { method: 'POST', params: { code: code.trim().toUpperCase(), userId: this.userId }, raw: true });
   }
 
   sendMessage(sessionId, data, { keepalive = false } = {}) {

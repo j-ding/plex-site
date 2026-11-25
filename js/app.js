@@ -318,6 +318,9 @@ document.addEventListener('click', async e => {
       setTrailersOn(!trailersOn());
       action.textContent = views.trailerMenuLabel();
       break;
+    case 'approve-device':
+      views.openApproveDialog();
+      break;
     case 'share-site':
       views.copyText(views.siteLink(), 'DingFlix link copied. People still need an account (Manage → Invite someone) to sign in.');
       break;

@@ -896,6 +896,100 @@ a.server { color: inherit; }
 @keyframes pop-in { from { opacity: 0; transform: translateY(6px); } }
 @keyframes pop-out { to { opacity: 0; } }
 
+/* ---------- quality labels, skip intro, previews, sign-in codes ---------- */
+
+.q-tags { position: absolute; left: 6px; bottom: 8px; display: flex; gap: 4px; pointer-events: none; }
+.q-tags span {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, .72);
+  border: 1px solid rgba(255, 255, 255, .35);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+.q-pill { border-color: rgba(242, 165, 22, .7); color: var(--accent); }
+
+.skip-btn {
+  position: absolute;
+  right: 28px;
+  bottom: 96px;
+  z-index: 2;
+  background: rgba(22, 22, 29, .9);
+  border: 1px solid rgba(255, 255, 255, .5);
+  font-weight: 700;
+}
+.skip-btn:hover { background: #fff; color: #000; }
+#player.party-open .skip-btn { right: 368px; }
+
+.trickplay {
+  position: absolute;
+  bottom: 72px;
+  z-index: 2;
+  transform: translateX(-50%);
+  pointer-events: none;
+  text-align: center;
+}
+.tp-frame { width: 240px; overflow: hidden; border: 2px solid #fff; border-radius: 6px; background: #000; box-shadow: 0 8px 24px rgba(0, 0, 0, .6); }
+.tp-frame img { display: block; max-width: none; transform-origin: 0 0; }
+.tp-time { display: inline-block; margin-top: 6px; padding: 2px 8px; border-radius: 4px; background: rgba(0, 0, 0, .75); font-size: 14px; font-weight: 600; }
+
+.qc-code { font-size: 40px; font-weight: 800; letter-spacing: .2em; margin: 4px 0 10px; color: var(--accent); }
+.qc-help { font-size: 14px; max-width: 320px; margin: 0 auto 8px !important; }
+.qc-wait { font-size: 13px; animation: pulse 1.6s ease-in-out infinite; }
+.code-input {
+  width: 100%;
+  margin: 6px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--bg-3);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  font-size: 24px;
+  letter-spacing: .2em;
+  text-align: center;
+  text-transform: uppercase;
+}
+.code-input:focus { outline: none; border-color: var(--accent); }
+
+.party-head [data-invite] { margin-left: auto; align-self: center; }
+.party-reacts { display: flex; justify-content: space-between; gap: 4px; padding: 6px 12px 0; border-top: 1px solid var(--bg-3); }
+.party-reacts button {
+  flex: 1;
+  padding: 6px 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font-size: 20px;
+  cursor: pointer;
+}
+.party-reacts button:hover { background: var(--bg-3); }
+.party-float { position: absolute; inset: 0 auto 0 0; width: 100%; pointer-events: none; overflow: hidden; z-index: 2; }
+#player.party-open .party-float { width: calc(100% - 340px); }
+.float-react {
+  position: absolute;
+  bottom: 90px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 40px;
+  line-height: 1;
+  animation: float-up 3.2s ease-out forwards;
+}
+.float-react small { font-size: 12px; font-weight: 600; margin-top: 2px; padding: 1px 6px; border-radius: 999px; background: rgba(0, 0, 0, .6); }
+@keyframes float-up {
+  0% { opacity: 0; transform: translateY(0) scale(.6); }
+  12% { opacity: 1; transform: translateY(-20px) scale(1); }
+  100% { opacity: 0; transform: translateY(-46vh) scale(1.05); }
+}
+@media (max-width: 760px) {
+  .skip-btn { right: 16px; bottom: 80px; }
+  #player.party-open .skip-btn { right: 16px; bottom: calc(50% + 70px); }
+  #player.party-open .party-float { width: 100%; height: 50%; }
+  .trickplay { bottom: 64px; }
+}
+
 /* ---------- misc ---------- */
 
 .loading { min-height: 60vh; display: grid; place-items: center; }

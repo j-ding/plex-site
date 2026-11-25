@@ -1,7 +1,7 @@
 import { state } from './state.js';
 import { CONFIG } from './config.js';
 import { $, esc, sleep } from './util.js';
-import { toast } from './views.js';
+import { toast, siteBase, copyText } from './views.js';
 
 /* Watching together (Jellyfin).
 
@@ -15,6 +15,7 @@ const TICK = 4000;     // how often the host sends where it is
 const DRIFT = 2;       // seconds a guest may be off before it jumps
 const LATENCY = 0.3;   // rough time a message takes, in seconds
 const GONE = 45000;    // a guest that hasn't checked in for this long has left
+const REACTIONS = ['😂', '😮', '😍', '👏', '😱', '🔥'];
 
 let live = null;   // the WebSocket: { server, ws, sid, ready }
 let party = null;  // { role: 'host'|'guest', host: { sid, name }, members, log, open, unread }
@@ -59,6 +60,7 @@ function open(l) {
     await l.server.announce().catch(() => {});
     l.sid = await l.server.mySessionId().catch(() => null);
     resolve(l.sid);
+    render(); // the player's watch-together button can show now
   };
   ws.onmessage = e => {
     let m;
@@ -200,6 +202,13 @@ function onMessage(m) {
     case 'note':
       if (fromHost) note(m.text);
       break;
+    case 'react':
+      if (!REACTIONS.includes(m.e)) return;
+      if (member) {
+        broadcast({ t: 'react', who: m.name, e: m.e }, m.sid);
+        floatReaction(m.name, m.e);
+      } else if (fromHost) floatReaction(m.who || m.name, m.e);
+      break;
     case 'ctl':
       if (member) control(m);
       break;
@@ -251,6 +260,7 @@ function applyState(m) {
   const target = m.pos / 1000 + (m.paused ? 0 : LATENCY);
   if (Math.abs(v.currentTime - target) > DRIFT) {
     expect(c, 'seeked');
+    c.quietSeek = true;
     v.currentTime = target;
   }
   if (m.paused && !v.paused) {
@@ -278,6 +288,7 @@ function control(m) {
   const moved = Math.abs(v.currentTime - at) > DRIFT;
   let line = '';
   if (moved) {
+    player.quietSeek = true;
     v.currentTime = at;
     line = `${m.name} skipped to ${clock(at)}.`;
   }
@@ -320,15 +331,18 @@ export function attachParty(c) {
     <aside class="party" aria-label="Watching together" hidden>
       <div class="party-head">
         <div><strong>Watching together</strong><small class="party-people"></small></div>
+        <button class="btn small" data-invite title="Copy a link that joins this">Invite</button>
         <button class="icon-btn" data-party-close aria-label="Hide chat">×</button>
       </div>
       <div class="party-log" aria-live="polite"></div>
+      <div class="party-reacts">${REACTIONS.map(e => `<button type="button" data-react="${e}" aria-label="React ${e}">${e}</button>`).join('')}</div>
       <form class="party-form">
         <input name="text" maxlength="300" autocomplete="off" placeholder="Say something…" aria-label="Message">
         <button class="btn small accent">Send</button>
       </form>
     </aside>
-    <div class="party-pops" aria-hidden="true"></div>`);
+    <div class="party-pops" aria-hidden="true"></div>
+    <div class="party-float" aria-hidden="true"></div>`);
 
   const v = c.video;
   v.addEventListener('playing', () => {
@@ -352,9 +366,27 @@ export function attachParty(c) {
 
   $('[data-party]', c.root).onclick = e => {
     e.stopPropagation();
-    if (!party) return;
-    party.open = !party.open;
+    if (!party) {
+      // Start one: you host, and Invite gives a link others can join with.
+      if (!live?.sid) return;
+      party = newParty('host', { sid: live.sid, name: me() });
+      note('Press Invite to copy a link for someone to join you. Friends can also join from Friends Watching Now on their home page.');
+    } else party.open = !party.open;
     render();
+  };
+  $('[data-invite]', c.root).onclick = () => {
+    if (!party || !player) return;
+    const host = party.role === 'host' ? live?.sid : party.host.sid;
+    if (!host) return;
+    copyText(`${siteBase()}#/watch/${player.ratingKey}?join=${encodeURIComponent(host)}`, 'Invite link copied. Whoever opens it (signed in) joins you.');
+  };
+  $('.party-reacts', c.root).onclick = e => {
+    const b = e.target.closest('[data-react]');
+    if (!b || !party) return;
+    const emoji = b.dataset.react;
+    if (party.role === 'host') broadcast({ t: 'react', who: me(), e: emoji });
+    else send(party.host.sid, { t: 'react', e: emoji }).catch(() => {});
+    floatReaction(me(), emoji);
   };
   $('[data-party-close]', c.root).onclick = () => {
     if (party) party.open = false;
@@ -438,13 +470,26 @@ function pop(who, text) {
   setTimeout(() => el.remove(), 7000);
 }
 
+// A reaction drifts up over the video for a few seconds.
+function floatReaction(who, emoji) {
+  const box = player && $('.party-float', player.root);
+  if (!box) return;
+  const el = document.createElement('span');
+  el.className = 'float-react';
+  el.style.left = `${10 + Math.random() * 70}%`;
+  el.innerHTML = `${emoji}<small>${esc(who)}</small>`;
+  box.append(el);
+  while (box.children.length > 12) box.firstChild.remove();
+  setTimeout(() => el.remove(), 3200);
+}
+
 function render() {
   const c = player;
   if (!c) return;
   const btn = $('[data-party]', c.root);
   const panel = $('.party', c.root);
   if (!btn || !panel) return;
-  btn.hidden = !party;
+  btn.hidden = !party && !(live?.sid && !state.server?.guest);
   const show = !!party?.open;
   panel.hidden = !show;
   c.root.classList.toggle('party-open', show);
