@@ -261,7 +261,19 @@ export class JellyfinServer {
   toStreams(itemId, source) {
     const choice = store.get(`jfTracks.${itemId}`) || {};
     const defaultAudio = choice.audio ?? source.DefaultAudioStreamIndex;
-    return (source.MediaStreams || [])
+    const streams = source.MediaStreams || [];
+    // Until they pick (or turn off) subtitles on this device, do what Jellyfin's own
+    // apps do: its default track (forced subtitles, such as translations of the bits
+    // in another language), else a forced track in the audio's language.
+    let defaultSub = choice.subtitle;
+    if (!('subtitle' in choice)) {
+      const audioLang = streams.find(s => s.Index === defaultAudio)?.Language;
+      const forced = streams.filter(s => s.Type === 'Subtitle' && s.IsForced);
+      defaultSub = source.DefaultSubtitleStreamIndex >= 0
+        ? source.DefaultSubtitleStreamIndex
+        : (forced.find(s => s.Language && s.Language === audioLang) || forced.find(s => !s.Language || s.Language === 'und') || null)?.Index;
+    }
+    return streams
       .filter(s => ['Video', 'Audio', 'Subtitle'].includes(s.Type))
       .map(s => {
         const streamType = { Video: 1, Audio: 2, Subtitle: 3 }[s.Type];
@@ -281,7 +293,7 @@ export class JellyfinServer {
           displayTitle: label,
           title: s.Title,
           forced: s.IsForced,
-          selected: streamType === 2 ? s.Index === defaultAudio : streamType === 3 ? s.Index === choice.subtitle : false,
+          selected: streamType === 2 ? s.Index === defaultAudio : streamType === 3 ? s.Index === defaultSub : false,
         };
       });
   }
@@ -698,8 +710,10 @@ export class JellyfinServer {
     let results;
     try {
       results = await this.api(`/Items/${itemId}/RemoteSearch/Subtitles/${LANG3[language] || language}`, { timeout: 45000 });
-    } catch {
-      throw noProvider;
+    } catch (err) {
+      if (err.status === 404) throw noProvider;
+      // Usually the plugin isn't signed in yet, or its account hit OpenSubtitles' daily limit.
+      throw new Error(`Jellyfin couldn't search (${err.name === 'TimeoutError' ? 'it took too long' : err.message}). Check that the Open Subtitles plugin is signed in to your OpenSubtitles.com account (Dashboard → Plugins → Open Subtitles), then restart Jellyfin`);
     }
     // An empty list can mean "nothing found" or "no provider installed"; tell them apart.
     if (!results?.length) {
