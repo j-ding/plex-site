@@ -155,6 +155,7 @@ async function run(render, seq) {
       if (state.server?.guest) return void endShare('This link has been turned off');
       if (state.server?.kind === 'jellyfin') {
         const uri = state.server.uri;
+        views.forgetAccount(state.server.id, state.server.userId);
         views.toast('Please sign in again.');
         return void location.replace(`#/jellyfin?server=${encodeURIComponent(uri)}`);
       }
@@ -291,6 +292,8 @@ document.addEventListener('click', async e => {
   switch (action.dataset.action) {
     case 'signout':
       closePlayer();
+      // Signing out on purpose also forgets the remembered sign-in on this device.
+      if (state.server?.kind === 'jellyfin') views.forgetAccount(state.server.id, state.server.userId);
       signOut();
       views.hideHeader();
       if (location.hash === '#/connect') route();

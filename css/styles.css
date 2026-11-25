@@ -645,6 +645,8 @@ a.server { color: inherit; }
 }
 .pin-box input:focus { outline: none; border-color: var(--accent); }
 .pin-box .actions { justify-content: center; }
+.pin-box .remember { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 12px; color: var(--muted); font-size: 14px; cursor: pointer; }
+.pin-box .remember input { all: revert; width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 
 /* ---------- player ---------- */
 

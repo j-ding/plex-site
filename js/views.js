@@ -1880,6 +1880,25 @@ export async function sharedView(seq, code) {
   }
 }
 
+/* Remembered Jellyfin sign-ins: tapping your profile on "Who's watching?" signs
+   you straight back in. Kept per server (by its id, so the home and the Tailscale
+   address share them), in this browser only. */
+const ACCOUNTS = 'jfAccounts';
+const rememberedOn = serverId => store.get(ACCOUNTS, {})[serverId] || {};
+
+function rememberAccount(cfg) {
+  const all = store.get(ACCOUNTS, {});
+  (all[cfg.id] ??= {})[cfg.userId] = { Id: cfg.userId, Name: cfg.userName, PrimaryImageTag: cfg.userImage, token: cfg.token };
+  store.set(ACCOUNTS, all);
+}
+
+export function forgetAccount(serverId, userId) {
+  const all = store.get(ACCOUNTS, {});
+  if (!all[serverId]?.[userId]) return;
+  delete all[serverId][userId];
+  store.set(ACCOUNTS, all);
+}
+
 export function jellyfinLink(server, userName) {
   const base = location.href.split('#')[0];
   return `${base}#/jellyfin?server=${encodeURIComponent(server.linkAddress?.() || server.uri)}${userName ? `&user=${encodeURIComponent(userName)}&invited=1` : ''}`;
@@ -1906,6 +1925,9 @@ export async function jellyfinView(seq, params) {
   }
   if (stale(seq)) return;
   store.set('jfLastServer', uri);
+  // Accounts remembered on this device show up even when the server hides them.
+  const saved = rememberedOn(info.Id);
+  people = [...people, ...Object.values(saved).filter(a => !people.some(p => p.Id === a.Id))];
 
   const invited = params.has('invited');
   const presetUser = params.get('user') || '';
@@ -1923,7 +1945,7 @@ export async function jellyfinView(seq, params) {
           ${people.map((p, i) => `
             <button class="profile ${p.Id === state.server?.userId ? 'current' : ''}" data-i="${i}">
               <span class="profile-pic">${avatar(p)}</span>
-              <span class="profile-name">${esc(p.Name)}${p.HasPassword ? ' <span aria-label="Password protected">🔒</span>' : ''}</span>
+              <span class="profile-name">${esc(p.Name)}${p.HasPassword && !saved[p.Id] ? ' <span aria-label="Password protected">🔒</span>' : ''}</span>
             </button>`).join('')}
           <button class="profile add" data-other>
             <span class="profile-pic">?</span>
@@ -1950,6 +1972,7 @@ export async function jellyfinView(seq, params) {
     if (b.hasAttribute('data-add')) return void jellyfinAddProfile({ uri, info });
     if (b.hasAttribute('data-other')) return void signIn('', true);
     const p = people[b.dataset.i];
+    if (saved[p.Id]) return void jellyfinResume({ uri, info, account: saved[p.Id], button: b, fallback: () => signIn(p.Name, true) });
     if (p.HasPassword) signIn(p.Name, true);
     else jellyfinLogin({ uri, info, name: p.Name, password: '' });
   });
@@ -1980,6 +2003,7 @@ function jellyfinSignInForm({ uri, info, name, askName, askPassword }) {
     <p>${askName ? 'Sign in' : `Sign in as <strong>${esc(name)}</strong>`}</p>
     ${askName ? `<input name="user" class="name-input" autocomplete="username" placeholder="Username" required aria-label="Username">` : ''}
     ${askPassword ? `<input name="pass" class="name-input" type="password" autocomplete="current-password" placeholder="Password" aria-label="Password">` : ''}
+    <label class="remember"><input type="checkbox" name="remember" checked> Remember me on this device</label>
     <div class="actions">
       <button class="btn accent">Sign in</button>
       <button type="button" class="btn" data-cancel>Cancel</button>
@@ -1991,11 +2015,32 @@ function jellyfinSignInForm({ uri, info, name, askName, askPassword }) {
     e.preventDefault();
     const user = askName ? form.querySelector('[name=user]').value.trim() : name;
     const pass = form.querySelector('[name=pass]')?.value || '';
-    jellyfinLogin({ uri, info, name: user, password: pass, form });
+    jellyfinLogin({ uri, info, name: user, password: pass, form, remember: form.querySelector('[name=remember]').checked });
   });
 }
 
-async function jellyfinLogin({ uri, info, name, password, form }) {
+// Signs in with a remembered account, no password. If the server no longer accepts
+// it (signed out elsewhere, password changed), forget it and ask for the password.
+async function jellyfinResume({ uri, info, account, button, fallback }) {
+  const error = $('#connect-error');
+  error.textContent = '';
+  button.disabled = true;
+  try {
+    const user = await jellyfinAuth.me(uri, account.token);
+    const cfg = jellyfinAuth.serverConfig(uri, info, { AccessToken: account.token, User: user });
+    setServer(cfg);
+    rememberAccount(cfg);
+    location.hash = '#/';
+  } catch (err) {
+    button.disabled = false;
+    if (err.status === 401 || err.status === 403) {
+      forgetAccount(info.Id, account.Id);
+      fallback();
+    } else error.textContent = `Couldn't sign in: ${err.message}`;
+  }
+}
+
+async function jellyfinLogin({ uri, info, name, password, form, remember = true }) {
   const error = $('#connect-error');
   const button = form?.querySelector('button');
   error.textContent = '';
@@ -2005,7 +2050,10 @@ async function jellyfinLogin({ uri, info, name, password, form }) {
   }
   try {
     const session = await jellyfinAuth.login(uri, name, password);
-    setServer(jellyfinAuth.serverConfig(uri, info, session));
+    const cfg = jellyfinAuth.serverConfig(uri, info, session);
+    setServer(cfg);
+    if (remember) rememberAccount(cfg);
+    else forgetAccount(cfg.id, cfg.userId);
     location.hash = '#/';
   } catch (err) {
     error.textContent = err.status === 401 ? 'Wrong username or password.' : `Couldn't sign in: ${err.message}`;

@@ -80,6 +80,8 @@ export const jellyfinAuth = {
   },
   info(uri) { return request(uri, '/System/Info/Public', { timeout: 8000 }); },
   publicUsers(uri) { return request(uri, '/Users/Public'); },
+  // Who a saved sign-in belongs to; fails with 401 once it's been signed out or revoked.
+  me(uri, token) { return request(uri, '/Users/Me', { token, timeout: 10000 }); },
   login(uri, username, password) {
     return request(uri, '/Users/AuthenticateByName', { method: 'POST', json: { Username: username, Pw: password || '' } });
   },
