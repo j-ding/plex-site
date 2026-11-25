@@ -158,6 +158,15 @@ Differences from Plex:
   `C:\Users\Ding\Videos\Plex` so it can read the same media as Plex.
 - Jellyfin only saves "continue watching" progress after the first 5% of a title.
 
+### DingFlix on the NAS (home network, no internet data)
+
+Phones often won't let the GitHub Pages site reach a server on the home network,
+and the Tailscale address sends video out to the internet and back. [nas/](nas/)
+runs DingFlix on the NAS itself: a small nginx container serves the DingFlix files
+and passes everything else to the NAS's Jellyfin, so `http://192.168.50.176:8099`
+opens DingFlix already connected, with no certificate warning, and video stays on
+the home network. See [nas/compose.yaml](nas/compose.yaml) for the setup.
+
 ### Links for people outside your home (Jellyfin)
 
 At home you may be connected through the server's home-network address (say
