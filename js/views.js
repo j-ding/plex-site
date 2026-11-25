@@ -20,6 +20,9 @@ const SORTS = [
 const app = () => $('#app');
 const stale = seq => seq !== state.seq;
 const img = (path, w, h) => (path ? state.server.image(path, w, h) : '');
+// Some servers (TerraMaster's NAS apps, for one) only let other sites show their
+// pictures when asked with CORS, so Jellyfin pictures are requested that way.
+export const xo = () => (state.server?.kind === 'jellyfin' ? 'crossorigin="anonymous" ' : '');
 export const loading = () => `<div class="loading"><div class="spinner"></div></div>`;
 
 function mount(seq, html) {
@@ -93,8 +96,13 @@ export async function renderHeader() {
   const setAvatar = thumb => {
     if (!thumb) return;
     const b = $('#menu-btn');
-    b.style.backgroundImage = `url(${JSON.stringify(thumb)})`;
-    b.textContent = '';
+    const show = url => {
+      b.style.backgroundImage = `url(${JSON.stringify(url)})`;
+      b.textContent = '';
+    };
+    // A CSS background can't be asked for with CORS, so fetch the picture first.
+    if (jellyfin) fetch(thumb).then(r => (r.ok ? r.blob() : null)).then(blob => blob && show(URL.createObjectURL(blob))).catch(() => {});
+    else show(thumb);
   };
   if (jellyfin) setAvatar(state.server.userAvatar());
   else if (state.profile) setAvatar(state.profile.thumb);
@@ -218,7 +226,7 @@ function card(item, { landscape = false, resume = false } = {}) {
     <a class="card ${landscape ? 'landscape' : 'poster'}" href="${esc(info.href)}" title="${esc(info.title)}"${previewable ? ` data-id="${esc(item.ratingKey)}"` : ''}>
       <div class="card-img">
         <span class="card-fallback">${esc(info.title)}</span>
-        ${src ? `<img loading="lazy" src="${esc(src)}" alt="" onerror="this.remove()">` : ''}
+        ${src ? `<img ${xo()}loading="lazy" src="${esc(src)}" alt="" onerror="this.remove()">` : ''}
         ${pct ? `<div class="progress"><span style="width:${pct.toFixed(1)}%"></span></div>` : ''}
         ${unwatched > 0 ? `<span class="badge">${unwatched}</span>` : ''}
         ${watched && !item.friend ? `<span class="badge" aria-label="Watched">✓</span>` : ''}
@@ -270,7 +278,7 @@ initPreviews({ meta: metaLine, img });
 function titleArt(item) {
   const logo = item.Image?.find(i => i.type === 'clearLogo')?.url;
   return logo
-    ? `<img class="hero-logo" src="${esc(img(logo, 800, 300))}" alt="${esc(item.title)}">`
+    ? `<img ${xo()}class="hero-logo" src="${esc(img(logo, 800, 300))}" alt="${esc(item.title)}">`
     : `<h1>${esc(item.title)}</h1>`;
 }
 
@@ -278,7 +286,7 @@ function hero(item) {
   if (!item) return '';
   return `
     <section class="hero">
-      <img class="hero-bg" src="${esc(img(item.art, 1920, 1080))}" alt="">
+      <img ${xo()}class="hero-bg" src="${esc(img(item.art, 1920, 1080))}" alt="">
       <div class="hero-content">
         ${titleArt(item)}
         <div class="meta">${metaLine(item)}</div>
@@ -533,7 +541,7 @@ export async function title(seq, id, params) {
 
   if (!mount(seq, `
     <section class="hero title-hero">
-      ${item.art ? `<img class="hero-bg" src="${esc(img(item.art, 1920, 1080))}" alt="">` : ''}
+      ${item.art ? `<img ${xo()}class="hero-bg" src="${esc(img(item.art, 1920, 1080))}" alt="">` : ''}
       <div class="hero-content">
         ${titleArt(item)}
         <div class="meta">${metaLine(item)}</div>
@@ -597,7 +605,7 @@ async function loadSeason(seq, seasonKey) {
       <a class="episode" href="#/watch/${esc(ep.ratingKey)}">
         <span class="ep-num">${esc(ep.index ?? '')}</span>
         <div class="ep-thumb">
-          ${ep.thumb ? `<img loading="lazy" src="${esc(img(ep.thumb, 400, 225))}" alt="">` : ''}
+          ${ep.thumb ? `<img ${xo()}loading="lazy" src="${esc(img(ep.thumb, 400, 225))}" alt="">` : ''}
           <span class="ep-play">▶</span>
           ${pct ? `<div class="progress"><span style="width:${pct.toFixed(1)}%"></span></div>` : ''}
         </div>
@@ -664,7 +672,7 @@ export async function personView(seq, id, params) {
   if (!mount(seq, `
     <div class="page-top pad person">
       <div class="person-head">
-        <div class="person-photo">${thumb ? `<img src="${esc(img(thumb, 300, 450))}" alt="" onerror="this.remove()">` : ''}<span>${esc(name[0])}</span></div>
+        <div class="person-photo">${thumb ? `<img ${xo()}src="${esc(img(thumb, 300, 450))}" alt="" onerror="this.remove()">` : ''}<span>${esc(name[0])}</span></div>
         <div class="person-text">
           <h1 class="page-title">${esc(name)}</h1>
           ${facts ? `<p class="muted">${esc(facts)}</p>` : ''}
@@ -1038,7 +1046,7 @@ export async function manage(seq) {
       ${members.length ? members.map((m, i) => `
         <section class="member" data-i="${i}">
           <div class="member-head">
-            <span class="member-pic">${m.profile?.thumb ? `<img src="${esc(m.profile.thumb)}" alt="">` : esc(m.name[0].toUpperCase())}</span>
+            <span class="member-pic">${m.profile?.thumb ? `<img ${xo()}src="${esc(m.profile.thumb)}" alt="">` : esc(m.name[0].toUpperCase())}</span>
             <div class="member-info">
               <strong>${esc(m.name)}</strong>
               <small class="muted">
@@ -1146,7 +1154,7 @@ function nowPlayingHtml(sessions) {
     const pct = m.duration ? Math.round(((m.viewOffset || 0) / m.duration) * 100) : 0;
     return `
       <div class="np">
-        ${m.thumb || m.grandparentThumb ? `<img src="${esc(img(m.grandparentThumb || m.thumb, 120, 180))}" alt="">` : '<div></div>'}
+        ${m.thumb || m.grandparentThumb ? `<img ${xo()}src="${esc(img(m.grandparentThumb || m.thumb, 120, 180))}" alt="">` : '<div></div>'}
         <div>
           <strong>${esc(m.User?.title || 'Someone')}</strong> is watching
           <div>${esc(itemName(m))}</div>
@@ -1184,7 +1192,7 @@ async function jellyfinManage(seq) {
   if (stale(seq)) return;
   const savedLinks = store.get('jfShareLinks', {});
   const together = JellyfinServer.togetherOn(users);
-  const avatar = u => (u.PrimaryImageTag ? `<img src="${esc(s.image(`/Users/${u.Id}/Images/Primary?tag=${u.PrimaryImageTag}`, 88))}" alt="">` : esc(u.Name[0].toUpperCase()));
+  const avatar = u => (u.PrimaryImageTag ? `<img ${xo()}src="${esc(s.image(`/Users/${u.Id}/Images/Primary?tag=${u.PrimaryImageTag}`, 88))}" alt="">` : esc(u.Name[0].toUpperCase()));
   const lastSeen = u => (u.LastActivityDate ? `last active ${when(Date.parse(u.LastActivityDate) / 1000)}` : 'never signed in');
 
   if (!mount(seq, `
@@ -1484,7 +1492,7 @@ export async function profilesView(seq) {
   const grid = $('#profiles');
   grid.innerHTML = people.map((p, i) => `
     <button class="profile ${p.uuid === state.profile?.uuid ? 'current' : ''}" data-i="${i}">
-      <span class="profile-pic">${p.thumb ? `<img src="${esc(p.thumb)}" alt="">` : esc((p.title || '?')[0].toUpperCase())}</span>
+      <span class="profile-pic">${p.thumb ? `<img ${xo()}src="${esc(p.thumb)}" alt="">` : esc((p.title || '?')[0].toUpperCase())}</span>
       <span class="profile-name">${esc(p.title)}${p.protected ? ' <span aria-label="PIN protected">🔒</span>' : ''}</span>
     </button>`).join('') + `
     <button class="profile add" data-add>
@@ -1849,7 +1857,7 @@ export async function jellyfinView(seq, params) {
   const presetUser = params.get('user') || '';
   // The admin of this server (signed in on this device) can add profiles here.
   const canAdd = state.server?.kind === 'jellyfin' && state.server.uri === uri && state.server.admin;
-  const avatar = p => (p.PrimaryImageTag ? `<img src="${esc(`${uri}/Users/${p.Id}/Images/Primary?tag=${p.PrimaryImageTag}&maxWidth=280`)}" alt="">` : esc((p.Name || '?')[0].toUpperCase()));
+  const avatar = p => (p.PrimaryImageTag ? `<img crossorigin="anonymous" src="${esc(`${uri}/Users/${p.Id}/Images/Primary?tag=${p.PrimaryImageTag}&maxWidth=280`)}" alt="">` : esc((p.Name || '?')[0].toUpperCase()));
 
   if (!mount(seq, `
     <div class="connect">

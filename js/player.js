@@ -1,5 +1,6 @@
 import { state } from './state.js';
 import { $, esc, store } from './util.js';
+import { xo } from './views.js';
 import { attachParty, detachParty, partyRole } from './party.js';
 
 const QUALITIES = [
@@ -162,7 +163,8 @@ async function load(c, at = 0) {
   if (loadId !== c.loadId) return void server.stopPlayback(plan);
   c.plan = plan;
   // A subtitle file from another site only loads if the video is fetched with CORS.
-  if (plan.textTrack) v.crossOrigin = 'anonymous';
+  // Jellyfin video is always fetched with CORS (some NAS proxies block it otherwise).
+  if (plan.textTrack || server.kind === 'jellyfin') v.crossOrigin = 'anonymous';
   else v.removeAttribute('crossorigin');
   attachTextTrack(c);
 
@@ -573,7 +575,7 @@ function upNext(c, { credits = false } = {}) {
   const pic = n.type === 'episode' ? n.thumb : n.art || n.thumb;
   const paint = () => {
     box.innerHTML = `
-      ${pic ? `<img src="${esc(state.server.image(pic, 320, 180))}" alt="">` : ''}
+      ${pic ? `<img ${xo()}src="${esc(state.server.image(pic, 320, 180))}" alt="">` : ''}
       <div>
         <small>${kind}</small>
         <strong>${esc(n.title)}</strong>

@@ -164,7 +164,7 @@ function openPreview(card, item, key) {
   preview.style.cssText = `left:${left + scrollX}px;top:${top + scrollY}px;width:${w}px`;
   preview.innerHTML = `
     <div class="preview-media">
-      ${item.art || item.thumb ? `<img src="${esc(render.img(item.art || item.thumb, 640, 360))}" alt="">` : ''}
+      ${item.art || item.thumb ? `<img ${state.server?.kind === 'jellyfin' ? 'crossorigin="anonymous" ' : ''}src="${esc(render.img(item.art || item.thumb, 640, 360))}" alt="">` : ''}
       <a class="preview-link" href="${href}" tabindex="-1" aria-hidden="true"></a>
       ${soundButton()}
     </div>
