@@ -127,6 +127,25 @@ export class JellyfinServer {
 
   api(path, opts = {}) { return request(this.uri, path, { token: this.token, ...opts }); }
 
+  // The address that goes into share and invite links. At home you may be connected
+  // through the server's home-network address, which friends elsewhere can't reach,
+  // so the owner can save the public one (Manage → Address for links).
+  static isPrivate(uri) {
+    try {
+      const h = new URL(uri).hostname;
+      return h === 'localhost' || /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h) || h.endsWith('.local');
+    } catch {
+      return true;
+    }
+  }
+
+  linkAddress() { return store.get(`jfLinkAddress.${this.id}`) || this.uri; }
+
+  setLinkAddress(uri) {
+    if (uri) store.set(`jfLinkAddress.${this.id}`, uri.replace(/\/+$/, ''));
+    else store.del(`jfLinkAddress.${this.id}`);
+  }
+
   url(path, params = {}) {
     const u = new URL(this.uri + path);
     for (const [k, v] of Object.entries(params)) {
@@ -788,7 +807,7 @@ export class JellyfinServer {
       EnableLiveTvManagement: false,
       MaxActiveSessions: 2,
     });
-    return { id, userId: user.Id, link: { s: this.uri, u: name, p: password, i: itemId, x: expires } };
+    return { id, userId: user.Id, link: { s: this.linkAddress(), u: name, p: password, i: itemId, x: expires } };
   }
 
   // Everything DingFlix needs about a share is in its guest account's name.

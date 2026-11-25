@@ -78,6 +78,7 @@ export async function renderHeader() {
           </div>
           ${state.userToken || jellyfin ? `<a href="#/profiles">Switch profile</a>` : ''}
           <a href="#/connect?pick=1">Switch server</a>
+          ${siteLink() ? `<button data-action="share-site">Share DingFlix link</button>` : ''}
           <button data-action="toggle-autoplay">${autoplayMenuLabel()}</button>
           ${canPreview() ? `<button data-action="toggle-trailers">${trailerMenuLabel()}</button>` : ''}
           <button data-action="signout">Sign out</button>
@@ -124,6 +125,24 @@ export async function renderHeader() {
     }
   }
   updateNav();
+}
+
+// The public address (e.g. Tailscale) that opens DingFlix already connected to this
+// Jellyfin server. Only for the owner, and only once a public address is known.
+export function siteLink() {
+  const s = state.server;
+  if (s?.kind !== 'jellyfin' || !s.admin || s.guest) return '';
+  const address = s.linkAddress();
+  return JellyfinServer.isPrivate(address) ? '' : `${new URL(address).origin}/`;
+}
+
+export async function copyText(text, done = 'Link copied.') {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(done);
+  } catch {
+    prompt('Copy this link:', text);
+  }
 }
 
 export const autoplayMenuLabel = () => `Autoplay next episode: ${autoplayOn() ? 'on' : 'off'}`;
@@ -1192,6 +1211,10 @@ async function jellyfinManage(seq) {
   if (stale(seq)) return;
   const savedLinks = store.get('jfShareLinks', {});
   const together = JellyfinServer.togetherOn(users);
+  // Connected through a public address? That's the one links should use.
+  if (!JellyfinServer.isPrivate(s.uri) && s.linkAddress() !== s.uri) s.setLinkAddress(s.uri);
+  const linkAddress = s.linkAddress();
+  const linkPrivate = JellyfinServer.isPrivate(linkAddress);
   const avatar = u => (u.PrimaryImageTag ? `<img ${xo()}src="${esc(s.image(`/Users/${u.Id}/Images/Primary?tag=${u.PrimaryImageTag}`, 88))}" alt="">` : esc(u.Name[0].toUpperCase()));
   const lastSeen = u => (u.LastActivityDate ? `last active ${when(Date.parse(u.LastActivityDate) / 1000)}` : 'never signed in');
 
@@ -1208,6 +1231,16 @@ async function jellyfinManage(seq) {
       </form>
       <p class="muted invite-note">This creates a Jellyfin account for them with access to all your libraries. You'll get a link to send them. It opens the sign-in screen with their name already filled in.</p>
       <div id="invite-result"></div>
+
+      <h2 class="group-title">Address for links</h2>
+      <form class="invite-form" id="link-address-form">
+        <input name="address" type="url" autocomplete="off" value="${esc(linkAddress)}" placeholder="https://…" aria-label="Public server address" required>
+        <button class="btn small ${linkPrivate ? 'accent' : ''}">Save</button>
+      </form>
+      ${siteLink() ? `<p class="muted invite-note">DingFlix itself is at <a class="text-link" href="${esc(siteLink())}" target="_blank" rel="noopener">${esc(siteLink())}</a>. Opening it goes straight to “Who’s watching?” on this server. <button type="button" class="btn small" data-share-site>Copy</button></p>` : ''}
+      <p class="muted invite-note">${linkPrivate
+        ? '<span class="error">This is a home-network address, so share and sign-in links won’t work for anyone outside your home.</span> Enter the public https:// address people should use (for example your Tailscale address).'
+        : 'Share and sign-in links send people to this address.'}</p>
 
       <h2 class="group-title">Shared links</h2>
       ${shares.length ? `<div class="pending-list share-list">${shares.map((x, i) => `
@@ -1289,6 +1322,26 @@ async function jellyfinManage(seq) {
     window.dispatchEvent(new HashChangeEvent('hashchange'));
   };
 
+  $('#link-address-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const button = e.target.querySelector('button');
+    const address = jellyfinAuth.normalize(e.target.address.value);
+    button.disabled = true;
+    button.textContent = 'Checking…';
+    try {
+      const info = await jellyfinAuth.info(address);
+      if (info?.Id !== s.id) throw new Error('that address leads to a different server');
+      s.setLinkAddress(address);
+      $('#topbar').dataset.key = ''; // redraw the menu (it gains "Share DingFlix link")
+      toast('Saved. New links will use this address.');
+      refresh();
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = 'Save';
+      toast(`Couldn't use that address: ${err.message === 'Failed to fetch' ? 'it didn’t answer' : err.message}`);
+    }
+  });
+
   $('#invite-form').addEventListener('submit', async e => {
     e.preventDefault();
     const form = e.target;
@@ -1316,6 +1369,7 @@ async function jellyfinManage(seq) {
   });
 
   app().querySelector('.manage').addEventListener('click', async e => {
+    if (e.target.closest('[data-share-site]')) return void copyText(siteLink(), 'DingFlix link copied. People still need an account (Invite someone) to sign in.');
     const tog = e.target.closest('[data-together]');
     if (tog) {
       tog.disabled = true;
@@ -1793,8 +1847,8 @@ export function openShareDialog(itemId, title) {
         }
       });
       button.hidden = true;
-      if (/^http:\/\/(localhost|127\.)/.test(state.server.uri)) {
-        result.insertAdjacentHTML('beforeend', `<p class="error">Heads up: you're connected through ${esc(state.server.uri)}, so this link only works on this computer. Sign in through your server's public https:// address to make links that work for friends.</p>`);
+      if (JellyfinServer.isPrivate(share.link.s)) {
+        result.insertAdjacentHTML('beforeend', `<p class="error">Heads up: this link uses ${esc(share.link.s)}, a home-network address, so it only works at home. Save your server's public https:// address in Manage → Address for links, then make a new link.</p>`);
       }
     } catch (err) {
       result.innerHTML = `<p class="error">Couldn't create the link: ${esc(err.message)}</p>`;
@@ -1828,7 +1882,7 @@ export async function sharedView(seq, code) {
 
 export function jellyfinLink(server, userName) {
   const base = location.href.split('#')[0];
-  return `${base}#/jellyfin?server=${encodeURIComponent(server.uri)}${userName ? `&user=${encodeURIComponent(userName)}&invited=1` : ''}`;
+  return `${base}#/jellyfin?server=${encodeURIComponent(server.linkAddress?.() || server.uri)}${userName ? `&user=${encodeURIComponent(userName)}&invited=1` : ''}`;
 }
 
 export async function jellyfinView(seq, params) {

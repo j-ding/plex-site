@@ -158,6 +158,16 @@ Differences from Plex:
   `C:\Users\Ding\Videos\Plex` so it can read the same media as Plex.
 - Jellyfin only saves "continue watching" progress after the first 5% of a title.
 
+### Links for people outside your home (Jellyfin)
+
+At home you may be connected through the server's home-network address (say
+`https://192.168.50.176:15443/...`), which nobody elsewhere can reach. Manage →
+**Address for links** holds the public address (for example your Tailscale
+Funnel address) that share and sign-in links use; it fills itself in when you're
+connected through a public address. Once it's set, the account menu has **Share
+DingFlix link**, which copies that address: it opens DingFlix already pointed at
+your server.
+
 ### Watch together (Jellyfin only)
 
 Manage → **Watch together → Turn on for everyone** gives every account (not

@@ -315,6 +315,9 @@ document.addEventListener('click', async e => {
       setTrailersOn(!trailersOn());
       action.textContent = views.trailerMenuLabel();
       break;
+    case 'share-site':
+      views.copyText(views.siteLink(), 'DingFlix link copied. People still need an account (Manage → Invite someone) to sign in.');
+      break;
     case 'toggle-autoplay':
       setAutoplay(!autoplayOn());
       action.textContent = views.autoplayMenuLabel();
