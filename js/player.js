@@ -394,6 +394,11 @@ async function selectTrack(c, kind, id, { force = false } = {}) {
 function setStatus(c, kind, message) {
   const el = $('.player-status', c.root);
   if (!el) return;
+  // The browser's own controls draw a spinner and grey out the picture while loading,
+  // so two spinners appeared at once. While starting, hide its controls and show ours;
+  // once playing, buffering is left to the browser's spinner alone.
+  if (kind === 'loading' && c.started) kind = null;
+  c.video.controls = kind !== 'loading';
   if (kind === 'loading') el.innerHTML = `<div class="spinner"></div>`;
   else if (kind === 'error') {
     el.innerHTML = `<div class="player-error"><p>${esc(message)}</p><button class="btn primary small" data-close>Go back</button></div>`;
