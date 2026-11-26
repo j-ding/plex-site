@@ -798,6 +798,17 @@ export class JellyfinServer {
     };
   }
 
+  // A text subtitle as a WebVTT file the browser draws over the video, or null for
+  // picture subtitles (PGS and the like), which have to be drawn into the video itself.
+  textSubtitle(item, mediaSourceId, sub) {
+    if (!sub || !TEXT_SUBS.has((sub.codec || '').toLowerCase())) return null;
+    return {
+      url: this.url(`/Videos/${item.ratingKey}/${mediaSourceId}/Subtitles/${sub.id}/0/Stream.vtt`),
+      label: sub.displayTitle,
+      language: sub.languageCode,
+    };
+  }
+
   async playback(item, { quality, forceTranscode, startAt = 0 }) {
     const part = item.Media?.[0]?.Part?.[0];
     if (!part) throw new Error('This title has no playable file.');
@@ -833,13 +844,7 @@ export class JellyfinServer {
     const source = info.MediaSources?.[0];
     if (!source) throw new Error("The server didn't return anything to play.");
     const base = { playSessionId: info.PlaySessionId, mediaSourceId: source.Id, audio: audio?.id, sub: sub?.id };
-    if (textSub) {
-      base.textTrack = {
-        url: this.url(`/Videos/${item.ratingKey}/${source.Id}/Subtitles/${sub.id}/0/Stream.vtt`),
-        label: sub.displayTitle,
-        language: sub.languageCode,
-      };
-    }
+    if (textSub) base.textTrack = this.textSubtitle(item, source.Id, sub);
     if (allowDirect && source.SupportsDirectPlay) {
       return {
         ...base,

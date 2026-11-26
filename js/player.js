@@ -384,9 +384,29 @@ async function selectTrack(c, kind, id, { force = false } = {}) {
   }
   if (ctx !== c) return;
   streamsOf(c, type).forEach(s => (s.selected = s.id === id));
+  // Subtitles the browser draws can be swapped while the video keeps playing.
+  if (kind === 'sub' && switchSubtitleLive(c, id)) return void renderTracks(c);
   c.forceHls = false;
   renderTracks(c);
   reload(c);
+}
+
+// Turns a subtitle on, off or to another one without restarting the video, when the
+// browser draws it (text subtitles on Jellyfin). Returns false when the stream has to
+// restart: a picture subtitle (PGS) must be drawn into the video by the server, and
+// one that already is can't be taken out of it.
+function switchSubtitleLive(c, id) {
+  const server = state.server;
+  if (!server.textSubtitle || !c.plan || !c.started) return false;
+  if (c.plan.sub != null && !c.plan.textTrack) return false; // the current one is in the picture
+  const sub = id ? streamsOf(c, SUBTITLE).find(s => s.id === id) : null;
+  const text = sub ? server.textSubtitle(c.item, c.plan.mediaSourceId, sub) : null;
+  if (sub && !text) return false;
+  c.plan.textTrack = text;
+  c.plan.sub = sub ? sub.id : undefined;
+  attachTextTrack(c);
+  report(c, c.video.paused ? 'paused' : 'playing');
+  return true;
 }
 
 /* ---------- UI ---------- */
