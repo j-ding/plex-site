@@ -5,6 +5,7 @@ import { openPlayer, closePlayer, autoplayOn, setAutoplay } from './player.js';
 import { $, $$, sleep, store, debounce } from './util.js';
 import { setTrailersOn, trailersOn, toggleTrailerSound } from './trailers.js';
 import { startLive, join } from './party.js';
+import { openListen, collapseListen, pauseBook, closeBook, audiobooksView, bookView } from './audiobooks.js';
 
 function parseHash() {
   const raw = location.hash.replace(/^#/, '') || '/';
@@ -31,6 +32,7 @@ async function route() {
     if (host) return void location.replace(`#/jellyfin?server=${encodeURIComponent(host)}`);
   }
 
+  if (/^\/(connect|profiles|jellyfin|join|s\/)/.test(path)) closeBook();
   if (path === '/connect') {
     closePlayer();
     state.rendered = raw;
@@ -90,10 +92,30 @@ async function route() {
         at = start.at;
       }
     }
+    pauseBook();
+    collapseListen();
     return openPlayer(key, { fromStart: params.has('start'), at });
   }
 
+  // The audiobook player opens over the page too; with nothing underneath, the book's page.
+  const listen = path.match(/^\/listen\/([\w-]+)$/);
+  if (listen) {
+    closePlayer();
+    if (!state.rendered || /^\/(connect|profiles|jellyfin|join|s\/)/.test(state.rendered)) {
+      state.rendered = `/book/${listen[1]}`;
+      const seq = ++state.seq;
+      run(() => bookView(seq, listen[1]), seq);
+    }
+    return openListen(listen[1], params).catch(err => {
+      console.error(err);
+      views.toast(err.message || 'Couldn’t open that audiobook.');
+      location.replace(`#/book/${listen[1]}`);
+    });
+  }
+
   closePlayer();
+  // Back from the player to its book's page: show the new place in the book.
+  if (collapseListen() && state.rendered?.startsWith('/book/')) state.rendered = null;
   views.updateNav();
   if (raw === state.rendered) return;
   state.rendered = raw;
@@ -106,6 +128,8 @@ async function route() {
   if (path === '/') render = () => views.home(seq);
   else if ((m = path.match(/^\/library\/(\w+)$/))) render = () => views.library(seq, m[1], params);
   else if ((m = path.match(/^\/title\/([\w-]+)$/))) render = () => views.title(seq, m[1], params);
+  else if (path === '/audiobooks') render = () => audiobooksView(seq);
+  else if ((m = path.match(/^\/book\/([\w-]+)$/))) render = () => bookView(seq, m[1]);
   else if (path === '/search') render = () => views.search(seq, params.get('q') || '');
   else if (path === '/manage') render = () => views.manage(seq);
   else if (path === '/holyarrs') render = () => views.holyarrsView(seq, params);
@@ -292,6 +316,7 @@ document.addEventListener('click', async e => {
   switch (action.dataset.action) {
     case 'signout':
       closePlayer();
+      closeBook();
       // Signing out on purpose also forgets the remembered sign-in on this device.
       if (state.server?.kind === 'jellyfin') views.forgetAccount(state.server.id, state.server.userId);
       signOut();

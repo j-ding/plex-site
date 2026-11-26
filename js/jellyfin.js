@@ -536,6 +536,147 @@ export class JellyfinServer {
     return (r.Items || []).map(x => this.toItem(x));
   }
 
+  /* --- audiobooks ---
+     Jellyfin lists every audio file in a Books library as its own "AudioBook", so a
+     book split into one file per chapter shows up as many. DingFlix groups the files
+     back into books by the folder they're in (one folder per book). */
+
+  async bookLibraries() {
+    const views = await this.api('/UserViews', { params: { userId: this.userId } });
+    return (views.Items || []).filter(v => v.CollectionType === 'books').map(v => ({ key: v.Id, title: v.Name }));
+  }
+
+  // Every audiobook, kept for a few minutes. `fresh` fetches again (after listening).
+  async audiobooks({ fresh = false } = {}) {
+    if (!fresh && this.bookCache && Date.now() - this.bookCache.at < 5 * 60 * 1000) return this.bookCache.books;
+    const libs = await this.bookLibraries();
+    if (!libs.length) return [];
+    const fields = 'ParentId,People,Overview,DateCreated,Genres,MediaSources';
+    const lists = await Promise.all(libs.map(l => this.api('/Items', {
+      params: { userId: this.userId, ParentId: l.key, Recursive: true, IncludeItemTypes: 'AudioBook', Fields: fields, EnableUserData: true, Limit: 20000 },
+    }).then(r => r.Items || []).catch(() => [])));
+    const files = lists.flat();
+    const libIds = new Set(libs.map(l => l.key));
+
+    // The folders the files are in, and the folders those are in (often the author).
+    const lookup = async ids => {
+      const out = new Map();
+      const list = [...ids].filter(id => id && !libIds.has(id));
+      for (let i = 0; i < list.length; i += 80) {
+        const r = await this.api('/Items', { params: { userId: this.userId, Ids: list.slice(i, i + 80).join(','), Fields: 'Overview,ParentId,DateCreated' } }).catch(() => ({}));
+        for (const x of r.Items || []) out.set(x.Id, x);
+      }
+      return out;
+    };
+    const folders = await lookup(new Set(files.map(f => f.ParentId)));
+    const grand = await lookup(new Set([...folders.values()].map(f => f.ParentId)));
+    const isFolder = x => x && x.Type !== 'CollectionFolder' && x.Type !== 'UserView';
+
+    const byFolder = new Map();
+    for (const f of files) {
+      const folder = folders.get(f.ParentId);
+      const key = isFolder(folder) ? f.ParentId : `file:${f.Id}`;
+      if (!byFolder.has(key)) byFolder.set(key, []);
+      byFolder.get(key).push(f);
+    }
+    const books = [];
+    for (const [key, group] of byFolder) {
+      const folder = key.startsWith('file:') ? null : folders.get(key);
+      // A folder can hold several whole books (say an author's folder of .m4b files):
+      // split it by album tag, or one book per file when each is a whole .m4b.
+      const albums = new Set(group.map(f => f.Album).filter(Boolean));
+      let sets;
+      if (albums.size > 1) sets = [...albums].map(a => group.filter(f => f.Album === a)).concat([group.filter(f => !f.Album)]).filter(s => s.length);
+      else if (group.length > 1 && group.every(f => /m4b/i.test(f.MediaSources?.[0]?.Container || f.Container || ''))) sets = group.map(f => [f]);
+      else sets = [group];
+      for (const parts of sets) books.push(this.toBook(parts, sets.length === 1 ? folder : null, folder ? grand.get(folder.ParentId) : null));
+    }
+    books.sort((a, b) => a.sortTitle.localeCompare(b.sortTitle));
+    this.bookCache = { at: Date.now(), books };
+    return books;
+  }
+
+  toBook(parts, folder, parentFolder) {
+    const name = s => s?.Name || '';
+    parts = [...parts].sort((a, b) => (a.ParentIndexNumber ?? 0) - (b.ParentIndexNumber ?? 0)
+      || (a.IndexNumber ?? 1e9) - (b.IndexNumber ?? 1e9)
+      || name(a).localeCompare(name(b), undefined, { numeric: true }));
+    const first = parts[0];
+    const people = kind => parts.flatMap(p => (p.People || []).filter(x => x.Type === kind).map(x => x.Name));
+    const author = first.AlbumArtist || first.AlbumArtists?.[0]?.Name || first.Artists?.[0]
+      || people('Author')[0] || people('Writer')[0]
+      || (parentFolder && parentFolder.Type !== 'CollectionFolder' && parentFolder.Type !== 'UserView' ? parentFolder.Name : '');
+    // Audiobook files usually keep the narrator in the "composer" tag.
+    const narrator = people('Composer')[0] || '';
+    const title = first.Album || (folder ? folder.Name : '') || (parts.length === 1 ? first.Name : '') || first.Name;
+    const cover = folder?.ImageTags?.Primary ? `/Items/${folder.Id}/Images/Primary?tag=${folder.ImageTags.Primary}`
+      : first.ImageTags?.Primary ? `/Items/${first.Id}/Images/Primary?tag=${first.ImageTags.Primary}`
+        : first.AlbumPrimaryImageTag && first.AlbumId ? `/Items/${first.AlbumId}/Images/Primary?tag=${first.AlbumPrimaryImageTag}` : null;
+    const added = [folder?.DateCreated, ...parts.map(p => p.DateCreated)].filter(Boolean).map(Date.parse);
+    return {
+      id: parts.length === 1 ? first.Id : folder?.Id || first.Id,
+      title,
+      sortTitle: title.replace(/^(the|a|an)\s+/i, ''),
+      author: author || '',
+      narrator,
+      cover,
+      summary: folder?.Overview || first.Overview || '',
+      genres: first.Genres || [],
+      addedAt: added.length ? Math.max(...added) / 1000 : 0,
+      parts: parts.map(p => ({
+        id: p.Id,
+        title: p.Name,
+        duration: ms(p.RunTimeTicks) || 0,
+        viewOffset: ms(p.UserData?.PlaybackPositionTicks) || 0,
+        played: !!p.UserData?.Played,
+        lastPlayed: p.UserData?.LastPlayedDate ? Date.parse(p.UserData.LastPlayedDate) : 0,
+      })),
+    };
+  }
+
+  // Chapter marks inside one file (an .m4b usually has them).
+  async chapters(fileId) {
+    const i = await this.api(`/Items/${fileId}`, { params: { userId: this.userId, Fields: 'Chapters' } });
+    return (i.Chapters || []).map(c => ({ name: c.Name || '', start: ms(c.StartPositionTicks) || 0 }));
+  }
+
+  // Plays the file as-is when the browser can; otherwise Jellyfin converts it to MP3.
+  audioUrl(fileId) {
+    return this.url(`/Audio/${fileId}/universal`, {
+      UserId: this.userId,
+      DeviceId: clientId(),
+      MaxStreamingBitrate: 320000000,
+      Container: 'opus,webm|opus,mp3,aac,m4a|aac,m4b|aac,flac,webma,webm|webm,wav,ogg',
+      TranscodingContainer: 'mp3',
+      TranscodingProtocol: 'http',
+      AudioCodec: 'mp3',
+      EnableRedirection: true,
+      EnableRemoteMedia: false,
+    });
+  }
+
+  // Where you are in a book, so Jellyfin's own apps (and other devices) carry on from there.
+  reportAudio(fileId, session, playState, timeMs, { keepalive = false } = {}) {
+    const body = {
+      ItemId: fileId,
+      MediaSourceId: fileId,
+      PlaySessionId: session.id,
+      PositionTicks: Math.round(timeMs * TICKS_PER_MS),
+      IsPaused: playState === 'paused',
+      PlayMethod: 'DirectPlay',
+      CanSeek: true,
+      PlaybackRate: session.rate || 1,
+    };
+    let path = '/Sessions/Playing/Progress';
+    if (playState === 'stopped') path = '/Sessions/Playing/Stopped';
+    else if (!session.started) {
+      session.started = true;
+      path = '/Sessions/Playing';
+    }
+    if (playState === 'stopped') session.started = false;
+    return this.api(path, { method: 'POST', json: body, raw: true, keepalive });
+  }
+
   /* --- what plays next --- */
 
   // When the end credits start (ms): Jellyfin's media segments (from a plugin such

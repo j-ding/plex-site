@@ -7,6 +7,7 @@ import { esc, $, $$, store, duration, debounce, sleep, trackLabel } from './util
 import { heroTrailer, initPreviews, canPreview, trailersOn } from './trailers.js';
 import { autoplayOn, SUB_LANGUAGES, defaultSubLanguage, fetchSubtitle } from './player.js';
 import { onlineExtras, playYouTube, checkKey, validKey, forgetServerKey } from './online-extras.js';
+import { continueListeningRow, searchBooks, bookGrid } from './audiobooks.js';
 import { holyarrsAddress, setHolyarrsAddress, forgetHolyarrs, holyarrsLink, holyarrsSearch, holyarrsTitle, holyarrsUp, linkAttrs, DEFAULT_ADDRESS } from './holyarrs.js';
 
 const VIDEO_TYPES = new Set(['movie', 'show', 'season', 'episode']);
@@ -114,6 +115,7 @@ export async function renderHeader() {
   try {
     const sections = await getSections();
     $('#nav').insertAdjacentHTML('beforeend', sections.map(s => `<a href="#/library/${esc(s.key)}">${esc(s.title)}</a>`).join(''));
+    if (state.server.bookLibraries && (await state.server.bookLibraries()).length) $('#nav').insertAdjacentHTML('beforeend', `<a href="#/audiobooks">Audiobooks</a>`);
   } catch {}
   if (canRequest()) $('#nav').insertAdjacentHTML('beforeend', `<a href="#/requests">Requests</a>`);
   if (await isAdmin().catch(() => false)) {
@@ -404,9 +406,10 @@ export async function home(seq) {
   pageTitle();
   app().innerHTML = loading();
   const s = state.server;
-  const [deck, hubs, soon, friends] = await Promise.all([
+  const [deck, hubs, soon, friends, listening] = await Promise.all([
     s.onDeck().catch(() => []), s.hubs(), s.upcoming ? s.upcoming(20).catch(() => []) : [],
     s.friendsWatching && !s.guest ? s.friendsWatching().catch(() => []) : [],
+    continueListeningRow().catch(() => ''),
   ]);
   const heroPool = hubs
     .filter(h => h.type === 'movie' || h.type === 'show')
@@ -415,6 +418,7 @@ export async function home(seq) {
   const pick = heroPool[Math.floor(Math.random() * heroPool.length)];
   const rows = friendsRow(friends)
     + row('Continue Watching', deck, { landscape: true, resume: true })
+    + listening
     + row('Coming Up', soon, { landscape: true }, '#/upcoming')
     + hubRows(hubs);
   if (mount(seq, rows
@@ -1002,15 +1006,15 @@ export async function search(seq, q) {
   if (input && document.activeElement !== input) input.value = q;
   if (!q) return void mount(seq, `<div class="page-top pad"><p class="muted">Search your libraries for titles, actors, or genres.</p></div>`);
   if (!$('#results')) app().innerHTML = `<div class="page-top pad"><div id="results">${loading()}</div></div>`;
-  const hubs = await state.server.search(q);
+  const [hubs, books] = await Promise.all([state.server.search(q), searchBooks(q).catch(() => [])]);
   if (stale(seq)) return;
   const groups = hubs.filter(h => VIDEO_TYPES.has(h.type) && h.Metadata?.length);
-  $('#results').innerHTML = groups.length
+  $('#results').innerHTML = groups.length || books.length
     ? groups.map(h => {
         const landscape = h.type === 'episode';
         return `<h2 class="group-title">${esc(h.title)}</h2>
           <div class="grid ${landscape ? 'landscape' : ''}">${h.Metadata.map(m => card(m, { landscape })).join('')}</div>`;
-      }).join('')
+      }).join('') + (books.length ? `<h2 class="group-title">Audiobooks</h2>${bookGrid(books)}` : '')
     : `<p class="muted">No results for “${esc(q)}”.</p>`;
   // The owner can go looking for it in HolyArrs; everyone else can ask for it.
   const admin = await isAdmin().catch(() => false);
