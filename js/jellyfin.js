@@ -581,6 +581,21 @@ export class JellyfinServer {
     return i >= 0 && films[i + 1] ? this.metadata(films[i + 1].Id) : null;
   }
 
+  // A small setting every DingFlix on this server can read, kept as a comment in the
+  // server's custom CSS (the one setting Jellyfin lets anyone read, signed in or not).
+  async sharedSetting(name) {
+    const b = await this.api('/Branding/Configuration');
+    return (b?.CustomCss || '').match(new RegExp(`/\\* dingflix:${name}=([^\\s*]+) \\*/`))?.[1] || null;
+  }
+
+  // Owner only. Leaves the rest of the custom CSS alone.
+  async setSharedSetting(name, value) {
+    const conf = await this.api('/System/Configuration/branding');
+    let css = (conf.CustomCss || '').replace(new RegExp(`\\n?/\\* dingflix:${name}=[^*]* \\*/`, 'g'), '');
+    if (value) css = `${css}${css ? '\n' : ''}/* dingflix:${name}=${value} */`;
+    await this.api('/System/Configuration/branding', { method: 'POST', json: { ...conf, CustomCss: css }, raw: true });
+  }
+
   // Deleted scenes, featurettes, trailers and other extras saved with a title
   // (subfolders such as "deleted scenes" next to the movie file).
   async extras(id) {

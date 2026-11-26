@@ -55,6 +55,11 @@ touches it.
   interviews and trailers saved with a movie (in subfolders such as
   `deleted scenes` or `featurettes` next to the file), grouped with filters.
   Commentary audio tracks are named as commentary in both audio menus.
+- Online extras: featurettes, behind the scenes, bloopers and trailers the
+  studios posted on YouTube (as listed on TMDB) join the Extras row and play in
+  DingFlix. The owner pastes a free TMDB API key in Manage → Online extras; it's
+  kept on the Jellyfin server (as a comment in its custom CSS) so every viewer
+  gets it.
 - Search across all libraries
 - **Manage** tab for the server owner: everyone with access, what they've
   finished watching, who's watching right now, and buttons to remove someone's

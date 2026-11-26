@@ -1076,6 +1076,36 @@ a.server { color: inherit; }
   font-weight: 600;
 }
 .extra-thumb .progress { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 0; }
+.extra-src {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, .7);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.extra-src::before { content: '▶'; color: #ff3d3d; margin-right: 4px; font-size: 9px; }
+.good-text { color: #3ddc84; font-weight: 600; }
+.yt-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, .82);
+  animation: lp-in .15s ease-out;
+}
+.yt-box { width: min(1100px, 100%, calc((100vh - 120px) * 16 / 9)); }
+.yt-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.yt-head strong { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.yt-out { color: var(--muted); font-size: 13px; text-decoration: none; }
+.yt-out:hover { color: var(--text); }
+.yt-frame { position: relative; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; background: #000; box-shadow: 0 20px 60px rgba(0, 0, 0, .7); }
+.yt-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 .extra-title { margin-top: 8px; font-size: 14px; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .extra-kind { color: var(--muted); font-size: 12px; margin-top: 2px; }
 @media (max-width: 760px) {

@@ -6,6 +6,7 @@ import { rowItems } from './categories.js';
 import { esc, $, $$, store, duration, debounce, sleep, trackLabel } from './util.js';
 import { heroTrailer, initPreviews, canPreview, trailersOn } from './trailers.js';
 import { autoplayOn, SUB_LANGUAGES, defaultSubLanguage, fetchSubtitle } from './player.js';
+import { onlineExtras, playYouTube, checkKey, validKey, forgetServerKey } from './online-extras.js';
 import { holyarrsAddress, setHolyarrsAddress, forgetHolyarrs, holyarrsLink, holyarrsSearch, holyarrsTitle, holyarrsUp, linkAttrs, DEFAULT_ADDRESS } from './holyarrs.js';
 
 const VIDEO_TYPES = new Set(['movie', 'show', 'season', 'episode']);
@@ -653,7 +654,7 @@ export async function title(seq, id, params) {
         ${fact('Studio', esc(item.studio))}
       </div>
     </div>
-    ${extrasSection(extras, item)}
+    <div id="extras-box">${extrasSection(extras, item)}</div>
     ${isShow && seasons.length ? `
       <section class="pad seasons">
         <div class="season-head">
@@ -666,7 +667,7 @@ export async function title(seq, id, params) {
       </section>` : ''}
     <div class="rows">${hubRows(related)}</div>`)) return;
   heroTrailer($('.title-hero'), id);
-  wireExtras();
+  wireExtras(seq, item, extras);
   langPicker(seq, item, isShow ? seasons.find(x => String(x.ratingKey) === String(current)) : null);
 
   if (isShow && seasons.length) {
@@ -686,6 +687,7 @@ const EXTRA_KINDS = [
   ['BehindTheScenes', 'Behind the scenes', 'Behind the scenes'],
   ['Featurette', 'Featurettes', 'Featurette'],
   ['Interview', 'Interviews', 'Interview'],
+  ['Bloopers', 'Bloopers', 'Bloopers'],
   ['Scene', 'Scenes', 'Scene'],
   ['Short', 'Shorts', 'Short'],
   ['Clip', 'Clips', 'Clip'],
@@ -706,7 +708,11 @@ function extrasSection(extras, item) {
   const list = (extras || [])
     .filter(x => !['ThemeSong', 'ThemeVideo', 'Sample'].includes(x.extraType))
     .map(x => ({ x, kind: kindOf(x) }))
-    .sort((a, b) => EXTRA_KINDS.indexOf(a.kind) - EXTRA_KINDS.indexOf(b.kind) || String(a.x.title).localeCompare(String(b.x.title), undefined, { numeric: true }));
+    // By kind; your own files before YouTube ones (which keep TMDB's order: official, newest).
+    .map((e, i) => ({ ...e, i }))
+    .sort((a, b) => EXTRA_KINDS.indexOf(a.kind) - EXTRA_KINDS.indexOf(b.kind)
+      || (a.x.online ? 1 : 0) - (b.x.online ? 1 : 0)
+      || (a.x.online ? a.i - b.i : String(a.x.title).localeCompare(String(b.x.title), undefined, { numeric: true })));
   if (!list.length) return '';
   const groups = EXTRA_KINDS.filter(k => list.some(e => e.kind === k));
   const chip = (key, label, n, on) => `<button class="chip ${on ? 'on' : ''}" data-extras="${key}" aria-pressed="${on}">${esc(label)} <span class="chip-n">${n}</span></button>`;
@@ -722,11 +728,13 @@ function extrasSection(extras, item) {
       <div class="extras-row">
         ${list.map(({ x, kind }) => {
           const pic = x.thumb || x.art || item.art;
+          const src = x.online ? x.thumb : pic && img(pic, 480, 270);
           const pct = x.viewOffset && x.duration ? (x.viewOffset / x.duration) * 100 : 0;
           return `
-          <a class="extra-card" href="#/watch/${esc(x.ratingKey)}" data-kind="${esc(kind[0])}" title="${esc(x.title)}">
+          <a class="extra-card" href="${x.online ? `https://www.youtube.com/watch?v=${esc(x.youtube)}` : `#/watch/${esc(x.ratingKey)}`}" ${x.online ? `data-yt="${esc(x.youtube)}" target="_blank" rel="noopener"` : ''} data-kind="${esc(kind[0])}" title="${esc(x.title)}">
             <div class="extra-thumb ${x.thumb ? '' : 'fallback'}">
-              ${pic ? `<img ${xo()}src="${esc(img(pic, 480, 270))}" alt="" loading="lazy" onerror="this.parentNode.classList.add('fallback');this.remove()">` : ''}
+              ${src ? `<img ${x.online ? '' : xo()}src="${esc(src)}" alt="" loading="lazy" onerror="this.parentNode.classList.add('fallback');this.remove()">` : ''}
+              ${x.online ? '<span class="extra-src">YouTube</span>' : ''}
               <span class="extra-play" aria-hidden="true">▶</span>
               ${x.duration ? `<span class="extra-time">${clock(x.duration)}</span>` : ''}
               ${pct ? `<div class="progress"><span style="width:${pct.toFixed(1)}%"></span></div>` : ''}
@@ -739,9 +747,15 @@ function extrasSection(extras, item) {
     </section>`;
 }
 
-function wireExtras() {
-  const box = $('.extras');
-  box?.addEventListener('click', e => {
+function wireExtras(seq, item, local) {
+  const box = $('#extras-box');
+  if (!box) return;
+  box.addEventListener('click', e => {
+    const yt = e.target.closest('[data-yt]');
+    if (yt && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      e.preventDefault();
+      return void playYouTube(yt.dataset.yt, yt.title);
+    }
     const chip = e.target.closest('[data-extras]');
     if (!chip) return;
     const want = chip.dataset.extras;
@@ -752,6 +766,11 @@ function wireExtras() {
     $$('.extra-card', box).forEach(card => { card.hidden = want !== 'all' && card.dataset.kind !== want; });
     $('.extras-row', box).scrollLeft = 0;
   });
+  // Add what the studios posted on YouTube, once TMDB answers.
+  onlineExtras(item).then(online => {
+    if (!online.length || stale(seq) || !box.isConnected) return;
+    box.innerHTML = extrasSection([...(local || []), ...online], item);
+  }).catch(() => {});
 }
 
 /* Audio and subtitle choice on the title page, before pressing play. A movie's choice is
@@ -1583,6 +1602,14 @@ async function jellyfinManage(seq) {
         ? '<span class="error">This is a home-network address, so share and sign-in links won’t work for anyone outside your home.</span> Enter the public https:// address people should use (for example your Tailscale address).'
         : 'Share and sign-in links send people to this address.'}</p>
 
+      <h2 class="group-title">Online extras</h2>
+      <p class="muted invite-note">Featurettes, behind-the-scenes videos, bloopers and trailers that studios post on YouTube, shown under <strong>Extras</strong> on every title and played right in DingFlix. It needs a free key from TMDB: sign up at <a class="text-link" href="https://www.themoviedb.org/signup" target="_blank" rel="noopener">themoviedb.org</a>, then Settings → API → create one, and paste the <strong>API Key</strong> (or the Read Access Token) here. It's saved on your Jellyfin server, so everyone's DingFlix uses it.</p>
+      <form class="invite-form" id="tmdb-form">
+        <input name="key" autocomplete="off" spellcheck="false" placeholder="TMDB API key" aria-label="TMDB API key" required>
+        <button class="btn small accent">Save</button>
+      </form>
+      <p class="muted invite-note" id="tmdb-state">Checking…</p>
+
       <h2 class="group-title">Shared links</h2>
       ${shares.length ? `<div class="pending-list share-list">${shares.map((x, i) => `
         <div class="pending-row">
@@ -1662,6 +1689,48 @@ async function jellyfinManage(seq) {
     state.rendered = null;
     window.dispatchEvent(new HashChangeEvent('hashchange'));
   };
+
+  const tmdbState = async () => {
+    const el = $('#tmdb-state');
+    const key = await s.sharedSetting('tmdb').catch(() => null);
+    if (!el?.isConnected) return;
+    el.innerHTML = key
+      ? `<span class="good-text">On.</span> Saved key ends in <code>${esc(key.slice(-4))}</code>. <button type="button" class="btn small" data-tmdb-remove>Turn off</button>`
+      : 'Off: no key saved yet.';
+  };
+  tmdbState();
+  $('#tmdb-state').addEventListener('click', async e => {
+    if (!e.target.closest('[data-tmdb-remove]')) return;
+    try {
+      await s.setSharedSetting('tmdb', null);
+      forgetServerKey();
+      toast('Online extras turned off.');
+    } catch (err) {
+      toast(`Couldn't change it: ${err.message}`);
+    }
+    tmdbState();
+  });
+  $('#tmdb-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const form = e.target;
+    const button = form.querySelector('button');
+    const key = form.key.value.trim();
+    if (!validKey(key)) return void toast('That doesn’t look like a TMDB key. Copy the whole API Key or Read Access Token.');
+    button.disabled = true;
+    button.textContent = 'Checking…';
+    try {
+      await checkKey(key);
+      await s.setSharedSetting('tmdb', key);
+      forgetServerKey();
+      form.reset();
+      toast('Saved. Extras from YouTube now show on title pages.');
+    } catch (err) {
+      toast(`Couldn't save it: ${err.message === 'Failed to fetch' ? 'TMDB didn’t answer' : err.message}`);
+    }
+    button.disabled = false;
+    button.textContent = 'Save';
+    tmdbState();
+  });
 
   $('#link-address-form').addEventListener('submit', async e => {
     e.preventDefault();
