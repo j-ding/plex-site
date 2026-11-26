@@ -48,6 +48,13 @@ touches it.
   another device
 - Watch together extras: start a party yourself and copy an Invite link, and
   send emoji reactions that float over everyone's video
+- Choose audio and subtitles on the title page before playing (for a Jellyfin
+  show, by language for every episode), with **Find subtitles online** to fetch
+  them from OpenSubtitles through the server
+- Extras on the title page: deleted scenes, featurettes, behind the scenes,
+  interviews and trailers saved with a movie (in subfolders such as
+  `deleted scenes` or `featurettes` next to the file), grouped with filters.
+  Commentary audio tracks are named as commentary in both audio menus.
 - Search across all libraries
 - **Manage** tab for the server owner: everyone with access, what they've
   finished watching, who's watching right now, and buttons to remove someone's

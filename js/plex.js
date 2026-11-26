@@ -375,6 +375,12 @@ export class PlexServer {
   async onDeck() { return (await this.get('/library/onDeck')).Metadata ?? []; }
   async search(query) { return (await this.get('/hubs/search', { query, limit: 30 })).Hub ?? []; }
 
+  // Extras saved with a title; Plex calls the kind a subtype.
+  async extras(id) {
+    const KIND = { deletedScene: 'DeletedScene', behindTheScenes: 'BehindTheScenes', featurette: 'Featurette', interview: 'Interview', sceneOrSample: 'Scene', short: 'Short', trailer: 'Trailer', clip: 'Clip' };
+    return ((await this.get(`/library/metadata/${id}/extras`)).Metadata ?? []).map(m => ({ ...m, extraType: KIND[m.subtype] || 'Unknown' }));
+  }
+
   async metadata(id) {
     const item = (await this.get(`/library/metadata/${id}`, { includeGuids: 1, includeMarkers: 1 })).Metadata?.[0];
     if (!item) throw new Error('That title is no longer on the server.');

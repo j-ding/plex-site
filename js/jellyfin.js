@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { store } from './util.js';
+import { store, isCommentary } from './util.js';
 import { clientId, browser } from './plex.js';
 import { buildCategories, featuredOrder, rowItems } from './categories.js';
 import { youTubeKey } from './trailers.js';
@@ -250,6 +250,7 @@ export class JellyfinServer {
       releasedAt: i.PremiereDate ? Date.parse(i.PremiereDate) / 1000 : undefined,
       // Only single-title lookups ask for these.
       trailers: (i.RemoteTrailers || []).map(t => t.Url),
+      extraType: i.ExtraType || (i.Type === 'Trailer' ? 'Trailer' : undefined),
       chapters: (i.Chapters || []).map(c => ({ name: c.Name || '', start: ms(c.StartPositionTicks) || 0 })),
       Guid: Object.entries(i.ProviderIds || {}).map(([k, v]) => ({ id: `${k.toLowerCase()}://${v}` })),
     };
@@ -298,8 +299,9 @@ export class JellyfinServer {
     // its own track (in the player) more recently than that.
     const pref = seriesId && store.get(`jfTracks.series.${seriesId}`);
     if (pref) {
+      const commentary = s => /commentary/i.test(s.Title || '');
       const match = (type, want) => {
-        const list = streams.filter(s => s.Type === type && s.Language === want.lang);
+        const list = streams.filter(s => s.Type === type && s.Language === want.lang && commentary(s) === !!want.commentary);
         return list.find(s => !!s.IsForced === !!want.forced && !!s.IsHearingImpaired === !!want.sdh)
           || list.find(s => !!s.IsForced === !!want.forced) || list[0];
       };
@@ -579,6 +581,18 @@ export class JellyfinServer {
     return i >= 0 && films[i + 1] ? this.metadata(films[i + 1].Id) : null;
   }
 
+  // Deleted scenes, featurettes, trailers and other extras saved with a title
+  // (subfolders such as "deleted scenes" next to the movie file).
+  async extras(id) {
+    const params = { userId: this.userId };
+    const lists = await Promise.all([
+      this.api(`/Items/${id}/SpecialFeatures`, { params }).catch(() => []),
+      this.api(`/Items/${id}/LocalTrailers`, { params }).catch(() => []),
+    ]);
+    const seen = new Set();
+    return lists.flat().filter(x => x && !seen.has(x.Id) && seen.add(x.Id)).map(x => this.toItem(x));
+  }
+
   scrobble(id) { return this.api(`/UserPlayedItems/${id}`, { method: 'POST', params: { userId: this.userId } }); }
   unscrobble(id) { return this.api(`/UserPlayedItems/${id}`, { method: 'DELETE', params: { userId: this.userId } }); }
 
@@ -595,7 +609,7 @@ export class JellyfinServer {
   selectSeriesStreams(seriesId, { audio, subtitle }) {
     const key = `jfTracks.series.${seriesId}`;
     const pref = store.get(key) || {};
-    const want = s => ({ lang: s.languageCode, forced: !!s.forced, sdh: !!s.hearingImpaired });
+    const want = s => ({ lang: s.languageCode, forced: !!s.forced, sdh: !!s.hearingImpaired, commentary: isCommentary(s) });
     if (audio) Object.assign(pref, { audio: want(audio), audioAt: Date.now() });
     if (subtitle !== undefined) Object.assign(pref, { subtitle: subtitle ? want(subtitle) : null, subtitleAt: Date.now() });
     store.set(key, pref);

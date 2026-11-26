@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { $, esc, store } from './util.js';
+import { $, esc, store, trackLabel } from './util.js';
 import { xo } from './views.js';
 import { attachParty, detachParty, partyRole } from './party.js';
 
@@ -253,12 +253,6 @@ function report(c, playState) {
 
 /* ---------- audio & subtitle tracks ---------- */
 
-function trackLabel(s) {
-  const main = s.displayTitle || s.language || `Track ${s.index}`;
-  // Many files tag every track with the release name; that's noise, not a description.
-  const looksLikeFilename = (s.title?.match(/\./g) || []).length >= 3;
-  return { main, extra: s.title && !looksLikeFilename && !main.includes(s.title) ? s.title : '' };
-}
 
 function trackButton(kind, id, label, on, extra = '') {
   return `

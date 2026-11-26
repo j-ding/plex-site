@@ -21,6 +21,21 @@ export const store = {
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 export const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ESC[c]);
 
+// How an audio or subtitle track is named in menus: { main, extra } (extra is a smaller second line).
+// A commentary track is named by its title ("Commentary with the director"), with the language underneath.
+const looksLikeFilename = t => (t?.match(/\./g) || []).length >= 3;
+export const isCommentary = s => s.streamType === 2 && /commentary/i.test(`${s.title || ''} ${s.extendedDisplayTitle || ''}`);
+export function trackLabel(s) {
+  const base = s.displayTitle || s.language || `Track ${s.index}`;
+  const title = looksLikeFilename(s.title) ? '' : (s.title || '').trim();
+  if (isCommentary(s)) {
+    const name = /commentary/i.test(title) ? title : title ? `Commentary: ${title}` : 'Commentary';
+    return { main: name, extra: base, commentary: true };
+  }
+  // Many files tag every track with the release name; that's noise, not a description.
+  return { main: base, extra: title && !base.includes(title) ? title : '' };
+}
+
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 

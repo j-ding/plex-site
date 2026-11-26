@@ -3,7 +3,7 @@ import { state, setServer, setProfile, getSections, viewerToken, isAdmin } from 
 import { auth, connect, PlexServer } from './plex.js';
 import { jellyfinAuth, shareCode, JellyfinServer } from './jellyfin.js';
 import { rowItems } from './categories.js';
-import { esc, $, $$, store, duration, debounce, sleep } from './util.js';
+import { esc, $, $$, store, duration, debounce, sleep, trackLabel } from './util.js';
 import { heroTrailer, initPreviews, canPreview, trailersOn } from './trailers.js';
 import { autoplayOn, SUB_LANGUAGES, defaultSubLanguage, fetchSubtitle } from './player.js';
 import { holyarrsAddress, setHolyarrsAddress, forgetHolyarrs, holyarrsLink, holyarrsSearch, holyarrsTitle, holyarrsUp, linkAttrs, DEFAULT_ADDRESS } from './holyarrs.js';
@@ -601,10 +601,11 @@ export async function title(seq, id, params) {
   if (item.type === 'episode') return void location.replace(`#/title/${item.grandparentRatingKey}?season=${item.parentRatingKey}`);
 
   const isShow = item.type === 'show';
-  const [seasons, related] = await Promise.all([
+  const [seasons, related, extras] = await Promise.all([
     isShow ? s.children(id).then(l => l.filter(x => x.type === 'season')) : [],
     // Jellyfin builds richer recommendations (director, categories); Plex has its own related hubs.
     (s.recommendations ? s.recommendations(item) : s.related(id)).catch(() => []),
+    s.extras ? s.extras(id).catch(() => []) : [],
   ]);
   if (stale(seq)) return;
   pageTitle(item.title);
@@ -652,6 +653,7 @@ export async function title(seq, id, params) {
         ${fact('Studio', esc(item.studio))}
       </div>
     </div>
+    ${extrasSection(extras, item)}
     ${isShow && seasons.length ? `
       <section class="pad seasons">
         <div class="season-head">
@@ -664,6 +666,7 @@ export async function title(seq, id, params) {
       </section>` : ''}
     <div class="rows">${hubRows(related)}</div>`)) return;
   heroTrailer($('.title-hero'), id);
+  wireExtras();
   langPicker(seq, item, isShow ? seasons.find(x => String(x.ratingKey) === String(current)) : null);
 
   if (isShow && seasons.length) {
@@ -675,6 +678,80 @@ export async function title(seq, id, params) {
     });
     loadSeason(seq, current);
   }
+}
+
+/* Extras (deleted scenes, featurettes…) on the title page, grouped by kind. */
+const EXTRA_KINDS = [
+  ['DeletedScene', 'Deleted scenes', 'Deleted scene'],
+  ['BehindTheScenes', 'Behind the scenes', 'Behind the scenes'],
+  ['Featurette', 'Featurettes', 'Featurette'],
+  ['Interview', 'Interviews', 'Interview'],
+  ['Scene', 'Scenes', 'Scene'],
+  ['Short', 'Shorts', 'Short'],
+  ['Clip', 'Clips', 'Clip'],
+  ['Trailer', 'Trailers', 'Trailer'],
+  ['Unknown', 'More extras', 'Extra'],
+];
+const clock = msec => {
+  const t = Math.round((msec || 0) / 1000);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const sec = String(t % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+};
+
+function extrasSection(extras, item) {
+  const kindOf = x => EXTRA_KINDS.find(k => k[0] === x.extraType) || EXTRA_KINDS.at(-1);
+  // Theme music/videos and samples aren't things to watch.
+  const list = (extras || [])
+    .filter(x => !['ThemeSong', 'ThemeVideo', 'Sample'].includes(x.extraType))
+    .map(x => ({ x, kind: kindOf(x) }))
+    .sort((a, b) => EXTRA_KINDS.indexOf(a.kind) - EXTRA_KINDS.indexOf(b.kind) || String(a.x.title).localeCompare(String(b.x.title), undefined, { numeric: true }));
+  if (!list.length) return '';
+  const groups = EXTRA_KINDS.filter(k => list.some(e => e.kind === k));
+  const chip = (key, label, n, on) => `<button class="chip ${on ? 'on' : ''}" data-extras="${key}" aria-pressed="${on}">${esc(label)} <span class="chip-n">${n}</span></button>`;
+  return `
+    <section class="pad extras">
+      <div class="extras-head">
+        <h2>Extras</h2>
+        ${groups.length > 1 ? `<div class="extras-chips" role="group" aria-label="Show">
+          ${chip('all', 'All', list.length, true)}
+          ${groups.map(k => chip(k[0], k[1], list.filter(e => e.kind === k).length, false)).join('')}
+        </div>` : `<span class="muted">${esc(groups[0][1])}</span>`}
+      </div>
+      <div class="extras-row">
+        ${list.map(({ x, kind }) => {
+          const pic = x.thumb || x.art || item.art;
+          const pct = x.viewOffset && x.duration ? (x.viewOffset / x.duration) * 100 : 0;
+          return `
+          <a class="extra-card" href="#/watch/${esc(x.ratingKey)}" data-kind="${esc(kind[0])}" title="${esc(x.title)}">
+            <div class="extra-thumb ${x.thumb ? '' : 'fallback'}">
+              ${pic ? `<img ${xo()}src="${esc(img(pic, 480, 270))}" alt="" loading="lazy" onerror="this.parentNode.classList.add('fallback');this.remove()">` : ''}
+              <span class="extra-play" aria-hidden="true">▶</span>
+              ${x.duration ? `<span class="extra-time">${clock(x.duration)}</span>` : ''}
+              ${pct ? `<div class="progress"><span style="width:${pct.toFixed(1)}%"></span></div>` : ''}
+            </div>
+            <div class="extra-title">${esc(x.title)}</div>
+            <div class="extra-kind">${esc(kind[2])}</div>
+          </a>`;
+        }).join('')}
+      </div>
+    </section>`;
+}
+
+function wireExtras() {
+  const box = $('.extras');
+  box?.addEventListener('click', e => {
+    const chip = e.target.closest('[data-extras]');
+    if (!chip) return;
+    const want = chip.dataset.extras;
+    $$('[data-extras]', box).forEach(c => {
+      c.classList.toggle('on', c === chip);
+      c.setAttribute('aria-pressed', c === chip);
+    });
+    $$('.extra-card', box).forEach(card => { card.hidden = want !== 'all' && card.dataset.kind !== want; });
+    $('.extras-row', box).scrollLeft = 0;
+  });
 }
 
 /* Audio and subtitle choice on the title page, before pressing play. A movie's choice is
@@ -701,14 +778,18 @@ async function langPicker(seq, item, season) {
   const canFind = !!s.searchSubtitles && !s.guest;
   if (audio.length < 2 && !subs.length && !canFind) return;
 
-  const name = x => x.displayTitle || x.language || x.title || `Track ${x.index}`;
+  const name = x => trackLabel(x).main;
   const current = list => list.find(x => x.selected);
   let open = null;
 
-  const option = (kind, id, label, on) => `
+  const option = (kind, id, label, on, x) => {
+    const { extra, commentary } = x ? trackLabel(x) : {};
+    return `
     <button class="lp-opt ${on ? 'on' : ''}" role="menuitemradio" aria-checked="${on}" data-kind="${kind}" data-id="${esc(id)}">
-      <span class="lp-check">${on ? '✓' : ''}</span><span>${esc(label)}</span>
+      <span class="lp-check">${on ? '✓' : ''}</span>
+      <span>${esc(label)}${commentary ? ' <span class="lp-tag">🎙</span>' : ''}${extra ? `<small>${esc(extra)}</small>` : ''}</span>
     </button>`;
+  };
   const pill = (kind, icon, label, value, list) => `
     <div class="lp-item">
       <button class="lp-pill ${open === kind ? 'open' : ''}" data-open="${kind}" aria-haspopup="menu" aria-expanded="${open === kind}">
@@ -724,9 +805,9 @@ async function langPicker(seq, item, season) {
     const sub = current(subs);
     box.innerHTML = `
       ${audio.length ? pill('audio', '🔊', 'Audio', a ? name(a) : 'Default',
-        audio.map(x => option('audio', x.id, name(x), x === a)).join('')) : ''}
+        audio.map(x => option('audio', x.id, name(x), x === a, x)).join('')) : ''}
       ${pill('sub', 'CC', 'Subtitles', sub ? name(sub) : 'Off',
-        option('sub', 0, 'Off', !sub) + subs.map(x => option('sub', x.id, name(x), x === sub)).join('') + (canFind ? `
+        option('sub', 0, 'Off', !sub) + subs.map(x => option('sub', x.id, name(x), x === sub, x)).join('') + (canFind ? `
           <button class="lp-find" data-find>
             <span class="lp-check" aria-hidden="true">⬇</span>
             <span>Find ${esc(langName(defaultSubLanguage()))} subtitles online…${season ? `<small>for ${esc(target.title)}</small>` : ''}</span>
