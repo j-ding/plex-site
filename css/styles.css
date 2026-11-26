@@ -368,7 +368,9 @@ select {
 .facts p { margin: 0 0 8px; }
 .facts span { color: var(--text); }
 .seasons { margin-top: 36px; }
-.season-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+/* "Episodes", then the season picker under it on the left, right above the list. */
+.season-head { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 12px; }
+.season-head select { min-width: 180px; font-size: 15px; font-weight: 600; }
 .season-head h2 { font-size: 22px; }
 .episode {
   display: grid;
