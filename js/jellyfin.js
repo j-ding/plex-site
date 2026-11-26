@@ -134,8 +134,9 @@ export class JellyfinServer {
   kind = 'jellyfin';
   supports = { subtitleSize: true };
 
-  constructor({ uri, token, userId, userName, userImage, name, id, admin, guest }) {
+  constructor({ uri, token, userId, userName, userImage, name, id, admin, guest, guestKind }) {
     this.guest = guest || null; // set when signed in through a share link: the one title they can see
+    this.guestKind = guestKind || 'title'; // 'title' (a movie or show) or 'book' (an audiobook)
     this.uri = uri.replace(/\/+$/, '');
     this.token = token;
     this.userId = userId;
@@ -627,6 +628,7 @@ export class JellyfinServer {
         id: p.Id,
         title: p.Name,
         duration: ms(p.RunTimeTicks) || 0,
+        container: p.Container || p.MediaSources?.[0]?.Container || '',
         viewOffset: ms(p.UserData?.PlaybackPositionTicks) || 0,
         played: !!p.UserData?.Played,
         lastPlayed: p.UserData?.LastPlayedDate ? Date.parse(p.UserData.LastPlayedDate) : 0,
@@ -639,6 +641,9 @@ export class JellyfinServer {
     const i = await this.api(`/Items/${fileId}`, { params: { userId: this.userId, Fields: 'Chapters' } });
     return (i.Chapters || []).map(c => ({ name: c.Name || '', start: ms(c.StartPositionTicks) || 0 }));
   }
+
+  // The file itself, unchanged (DingFlix reads chapter marks from it).
+  audioFileUrl(fileId) { return this.url(`/Audio/${fileId}/stream`, { static: true }); }
 
   // Plays the file as-is when the browser can; otherwise Jellyfin converts it to MP3.
   audioUrl(fileId) {
@@ -1054,7 +1059,7 @@ export class JellyfinServer {
 
   // Shares one movie or show: tags it (a show's seasons and episodes too), then
   // creates a hidden guest account that can only see items with that tag.
-  async createShare(itemId, { note = '', days = 0 } = {}) {
+  async createShare(itemId, { note = '', days = 0, kind = 'title' } = {}) {
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const tag = `dfshare-${id}`;
     const expires = days ? Date.now() + days * 86400000 : 0;
@@ -1062,7 +1067,16 @@ export class JellyfinServer {
     const name = `share-${id}-${expires ? expires.toString(36) : 'never'}${cleanNote ? ` ${cleanNote}` : ''}`;
     const password = Array.from(crypto.getRandomValues(new Uint8Array(18)), b => b.toString(36).padStart(2, '0')).join('').slice(0, 28);
 
-    await this.tagTree(itemId, tag, true);
+    if (kind === 'book') {
+      // An audiobook: its files, and its folder when it has one of its own.
+      const book = (await this.audiobooks({ fresh: true })).find(b => b.id === itemId);
+      if (!book) throw new Error('That audiobook is no longer on the server.');
+      const targets = book.parts.map(p => p.id);
+      if (!targets.includes(book.id)) targets.push(book.id);
+      for (const target of targets) await this.setTag(target, tag, true);
+    } else {
+      await this.tagTree(itemId, tag, true);
+    }
 
     const user = await this.api('/Users/New', { method: 'POST', json: { Name: name, Password: password } });
     await this.updatePolicy(user.Id, {
@@ -1078,7 +1092,9 @@ export class JellyfinServer {
       EnableLiveTvManagement: false,
       MaxActiveSessions: 2,
     });
-    return { id, userId: user.Id, link: { s: this.linkAddress(), u: name, p: password, i: itemId, x: expires } };
+    const link = { s: this.linkAddress(), u: name, p: password, i: itemId, x: expires };
+    if (kind === 'book') link.k = 'book';
+    return { id, userId: user.Id, link };
   }
 
   // Everything DingFlix needs about a share is in its guest account's name.
@@ -1092,8 +1108,12 @@ export class JellyfinServer {
     const users = await this.users();
     const list = users.map(u => ({ ...JellyfinServer.parseShareName(u.Name), user: u })).filter(s => s.id);
     await Promise.all(list.map(async s => {
-      const r = await this.api('/Items', { params: { userId: this.userId, Tags: s.tag, Recursive: true, IncludeItemTypes: 'Movie,Series', Fields: ITEM_FIELDS } }).catch(() => ({}));
-      s.item = this.toItem((r.Items || [])[0]);
+      const r = await this.api('/Items', { params: { userId: this.userId, Tags: s.tag, Recursive: true, IncludeItemTypes: 'Movie,Series,Folder,AudioBook', Fields: ITEM_FIELDS } }).catch(() => ({}));
+      const items = r.Items || [];
+      // A movie or show; else an audiobook (by its folder, or its album name).
+      const pick = items.find(x => x.Type === 'Movie' || x.Type === 'Series') || items.find(x => x.Type === 'Folder') || items[0];
+      s.item = this.toItem(pick);
+      if (pick?.Type === 'AudioBook' && pick.Album) s.item.title = pick.Album;
       s.lastUsed = s.user.LastActivityDate ? Date.parse(s.user.LastActivityDate) : 0;
       s.expired = !!s.expires && s.expires < Date.now();
     }));

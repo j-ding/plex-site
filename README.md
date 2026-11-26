@@ -65,6 +65,8 @@ touches it.
   you browse. 30-second skips, speed, a sleep timer, chapters, lock-screen
   controls, and your place saved in Jellyfin. A book split into one file per
   chapter is put back together by its folder (one folder per book).
+  Chapters inside .m4b files (which Jellyfin doesn't read) are read from the
+  file itself, a few small pieces at a time. Audiobooks can be shared by link too.
 - Search across all libraries
 - **Manage** tab for the server owner: everyone with access, what they've
   finished watching, who's watching right now, and buttons to remove someone's

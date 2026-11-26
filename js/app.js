@@ -66,8 +66,10 @@ async function route() {
     return run(() => views.joinView(seq, params), seq);
   }
   if (!state.server) return void location.replace('#/connect');
-  // Share-link guests can only open their one title (and play it).
-  if (state.server.guest && !/^\/(title|watch)\//.test(path)) return void location.replace(`#/title/${state.server.guest}`);
+  // Share-link guests can only open their one title (and play it), or their one audiobook.
+  if (state.server.guest && !(state.server.guestKind === 'book' ? /^\/(book|listen)\//.test(path) : /^\/(title|watch)\//.test(path))) {
+    return void location.replace(views.guestHome());
+  }
   views.renderHeader().catch(() => {});
   startLive();
 
@@ -325,7 +327,7 @@ document.addEventListener('click', async e => {
       else location.hash = '#/connect';
       break;
     case 'share':
-      views.openShareDialog(action.dataset.key, action.dataset.title);
+      views.openShareDialog(action.dataset.key, action.dataset.title, action.dataset.kind);
       break;
     case 'exit-share':
       endShare();

@@ -51,7 +51,7 @@ export async function renderHeader() {
   // Someone watching through a share link only gets that title.
   if (state.server.guest) {
     bar.innerHTML = `
-      <a class="logo" href="#/title/${esc(state.server.guest)}">${esc(CONFIG.appName)}</a>
+      <a class="logo" href="${esc(guestHome())}">${esc(CONFIG.appName)}</a>
       <div class="hdr-right">
         <span class="muted guest-note">Shared with you by ${esc(state.server.name || 'a friend')}</span>
         <button class="btn small" data-action="exit-share">Done</button>
@@ -1626,7 +1626,7 @@ async function jellyfinManage(seq) {
             <button class="btn small danger" data-revoke="${i}">Revoke</button>
           </span>
         </div>`).join('')}</div>`
-        : '<p class="muted">No shared links. Open any movie or show and press <strong>Share</strong> to send it to someone without them signing up.</p>'}
+        : '<p class="muted">No shared links. Open any movie, show or audiobook and press <strong>Share</strong> to send it to someone without them signing up.</p>'}
 
       <h2 class="group-title">Hidden titles</h2>
       ${hidden.length ? `<div class="pending-list">${hidden.flatMap((h, i) => h.from.map(f => `
@@ -2207,14 +2207,17 @@ async function completeJoin(seq, join) {
 
 const SHARE_DURATIONS = [[1, '1 day'], [7, '7 days'], [30, '30 days'], [0, 'Until I revoke it']];
 
-export function openShareDialog(itemId, title) {
+// Where a share-link guest's one title (or audiobook) lives.
+export const guestHome = (s = state.server) => (s.guestKind === 'book' ? `#/book/${s.guest}` : `#/title/${s.guest}`);
+
+export function openShareDialog(itemId, title, kind = 'title') {
   document.querySelector('.dialog-backdrop')?.remove();
   const wrap = document.createElement('div');
   wrap.className = 'dialog-backdrop';
   wrap.innerHTML = `
     <form class="dialog" role="dialog" aria-label="Share ${esc(title)}">
       <h2>Share “${esc(title)}”</h2>
-      <p class="muted">Anyone with the link can watch it without signing up. They can't see anything else in your library.</p>
+      <p class="muted">Anyone with the link can ${kind === 'book' ? 'listen to' : 'watch'} it without signing up. They can't see anything else in your library.</p>
       <label>Who's it for? <span class="muted">(optional, just for your list)</span>
         <input name="note" maxlength="30" autocomplete="off" placeholder="e.g. Mike">
       </label>
@@ -2241,7 +2244,7 @@ export function openShareDialog(itemId, title) {
     button.disabled = true;
     button.textContent = 'Creating…';
     try {
-      const share = await state.server.createShare(itemId, { note: form.note.value, days: Number(form.days.value) });
+      const share = await state.server.createShare(itemId, { note: form.note.value, days: Number(form.days.value), kind });
       const link = `${location.href.split('#')[0]}#/s/${shareCode.encode(share.link)}`;
       const links = store.get('jfShareLinks', {});
       links[share.id] = link;
@@ -2286,8 +2289,9 @@ export async function sharedView(seq, code) {
     if (stale(seq)) return;
     // Remember the visitor's own DingFlix server (if any) so they can get back to it.
     if (state.server && !state.server.guest) store.set('serverBeforeShare', store.get('server'));
-    setServer({ ...jellyfinAuth.serverConfig(data.s, info, session), guest: data.i, admin: false, owned: false });
-    location.replace(`#/title/${data.i}`);
+    const guestKind = data.k === 'book' ? 'book' : 'title';
+    setServer({ ...jellyfinAuth.serverConfig(data.s, info, session), guest: data.i, guestKind, admin: false, owned: false });
+    location.replace(guestHome({ guest: data.i, guestKind }));
   } catch (err) {
     if (stale(seq)) return;
     fail(err.status === 401 ? 'This link has been turned off' : 'Couldn\'t open this link right now. Try again in a bit');

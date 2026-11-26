@@ -4,6 +4,7 @@
 import { state } from './state.js';
 import { $, $$, esc, store, duration, uuid } from './util.js';
 import { xo, loading, toast } from './views.js';
+import { mp4Chapters } from './mp4-chapters.js';
 
 const SKIP = 30;
 const SPEEDS = [0.8, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5];
@@ -96,7 +97,8 @@ export async function chapterList(book) {
   if (chapterCache.has(key)) return chapterCache.get(key);
   let list = null;
   if (book.parts.length === 1) {
-    const marks = await state.server.chapters(book.parts[0].id).catch(() => []);
+    let marks = await state.server.chapters(book.parts[0].id).catch(() => []);
+    if (marks.length < 2) marks = await fileChapters(book.parts[0]);
     if (marks.length > 1) list = marks.map((c, n) => ({ title: c.name || `Chapter ${n + 1}`, part: 0, start: c.start }));
   }
   list ||= book.parts.map((p, i) => ({ title: partName(p.title, book, i), part: i, start: 0 }));
@@ -107,6 +109,24 @@ export async function chapterList(book) {
   });
   chapterCache.set(key, list);
   return list;
+}
+
+// Jellyfin doesn't read the chapters inside .m4b files, so DingFlix reads them from the
+// file (a few small pieces of it) and remembers them on this device.
+async function fileChapters(part) {
+  if (!/m4b|m4a|mp4|mov/i.test(part.container || 'm4b') || !state.server.audioFileUrl) return [];
+  const key = `fileChapters.${state.server.id}.${part.id}`;
+  const saved = store.get(key);
+  if (saved && saved.d === part.duration) return saved.list;
+  try {
+    const list = (await mp4Chapters(state.server.audioFileUrl(part.id), { signal: AbortSignal.timeout(30000) }))
+      .filter(c => c.start < (part.duration || Infinity));
+    store.set(key, { d: part.duration, list });
+    return list;
+  } catch (err) {
+    console.warn('Couldn’t read chapters from the file', err);
+    return [];
+  }
 }
 
 // File names like "The Hobbit - 03" become "Part 3"; real chapter names stay.
@@ -248,6 +268,7 @@ export async function bookView(seq, id) {
   const pr = progressOf(book, place);
   const nowAt = pr.started && !pr.done ? chapterAt(chapters, place.part, place.at) : -1;
   const src = cover(book, 600);
+  const owner = state.server.admin && !state.server.guest && !!state.server.createShare;
   const byline = [book.author && `by ${esc(book.author)}`, book.narrator && `read by ${esc(book.narrator)}`].filter(Boolean).join(' · ');
   const facts = [hoursLeft(pr.total), `${chapters.length} ${chapters.length === 1 ? 'chapter' : 'chapters'}`, ...book.genres.slice(0, 2).map(esc)];
 
@@ -268,6 +289,7 @@ export async function bookView(seq, id) {
             <a class="btn primary" href="#/listen/${esc(book.id)}${pr.done ? '?start=1' : ''}">▶ ${pr.done ? 'Listen again' : pr.started ? 'Resume' : 'Listen'}</a>
             ${pr.started && !pr.done ? `<a class="btn" href="#/listen/${esc(book.id)}?start=1">↺ Start over</a>` : ''}
             <button class="btn" data-book-done="${pr.done ? 0 : 1}">${pr.done ? '✓ Finished' : 'Mark as finished'}</button>
+            ${owner ? `<button class="btn" data-action="share" data-kind="book" data-key="${esc(book.id)}" data-title="${esc(book.title)}">↗ Share</button>` : ''}
           </div>
         </div>
       </div>
