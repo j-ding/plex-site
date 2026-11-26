@@ -1177,6 +1177,18 @@ export class JellyfinServer {
      Kept in each person's own Jellyfin display preferences, which the owner (an
      administrator) can read and update too, so no extra server is needed. */
 
+  // One of your own DingFlix settings, kept with your Jellyfin account so every device
+  // and every copy of DingFlix you sign in to gets it.
+  async myPref(name) {
+    return (await this.prefs(this.userId).catch(() => null))?.CustomPrefs?.[name] || null;
+  }
+
+  async setMyPref(name, value) {
+    const prefs = (await this.prefs(this.userId)) || {};
+    prefs.CustomPrefs = { ...prefs.CustomPrefs, [name]: value || '' };
+    await this.api('/DisplayPreferences/dingflix', { method: 'POST', params: { userId: this.userId, client: 'dingflix' }, json: prefs, raw: true });
+  }
+
   prefs(userId) {
     return this.api('/DisplayPreferences/dingflix', { params: { userId, client: 'dingflix' } });
   }

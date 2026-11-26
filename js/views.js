@@ -8,7 +8,7 @@ import { heroTrailer, initPreviews, canPreview, trailersOn } from './trailers.js
 import { autoplayOn, SUB_LANGUAGES, defaultSubLanguage, fetchSubtitle } from './player.js';
 import { onlineExtras, playYouTube, checkKey, validKey, forgetServerKey } from './online-extras.js';
 import { continueListeningRow, searchBooks, bookGrid } from './audiobooks.js';
-import { holyarrsAddress, setHolyarrsAddress, forgetHolyarrs, holyarrsLink, holyarrsSearch, holyarrsTitle, holyarrsUp, linkAttrs, DEFAULT_ADDRESS } from './holyarrs.js';
+import { holyarrsAddress, setHolyarrsAddress, forgetHolyarrs, holyarrsLink, holyarrsSearch, holyarrsTitle, holyarrsUp, linkAttrs, syncHolyarrs, guessAddress } from './holyarrs.js';
 
 const VIDEO_TYPES = new Set(['movie', 'show', 'season', 'episode']);
 const SORTS = [
@@ -119,6 +119,7 @@ export async function renderHeader() {
   } catch {}
   if (canRequest()) $('#nav').insertAdjacentHTML('beforeend', `<a href="#/requests">Requests</a>`);
   if (await isAdmin().catch(() => false)) {
+    syncHolyarrs().catch(() => {});
     $('#nav').insertAdjacentHTML('beforeend', `<a href="#/holyarrs" class="nav-admin">HolyArrs</a><a href="#/manage" class="nav-admin">Manage</a>`);
     // The owner sees how many requests are waiting.
     if (canRequest()) {
@@ -1307,6 +1308,7 @@ function reopenHolyarrs(seq) {
 export async function holyarrsView(seq, params = new URLSearchParams()) {
   pageTitle('HolyArrs');
   if (!(await isAdmin())) throw new Error('Only the owner of this server can add to the library.');
+  await syncHolyarrs().catch(() => {});
   const address = params.has('change') ? null : holyarrsAddress();
 
   if (!address) {
@@ -1316,10 +1318,10 @@ export async function holyarrsView(seq, params = new URLSearchParams()) {
         <p class="muted holyarrs-lead">HolyArrs finds movies and shows, downloads them and files them into your library, where DingFlix picks them up. It runs on your server alongside ${state.server.kind === 'jellyfin' ? 'Jellyfin' : 'Plex'}.</p>
         <h2 class="group-title">Where is it running?</h2>
         <form class="invite-form" id="holyarrs-form">
-          <input name="address" type="text" autocomplete="off" value="${esc(holyarrsAddress() || DEFAULT_ADDRESS)}" required aria-label="HolyArrs address">
+          <input name="address" type="text" autocomplete="off" value="${esc(holyarrsAddress() || guessAddress())}" required aria-label="HolyArrs address">
           <button class="btn accent">Connect</button>
         </form>
-        <p class="muted invite-note">Its address, as you'd open it in your browser. On the computer it runs on that's usually <strong>${DEFAULT_ADDRESS}</strong>. This is saved on this device only.</p>
+        <p class="muted invite-note">Its address, as you'd open it in your browser. If it runs on the same machine as ${state.server.kind === 'jellyfin' ? 'Jellyfin' : 'Plex'}, that's usually <strong>${esc(guessAddress())}</strong>. ${state.server.kind === 'jellyfin' ? 'It’s kept with your Jellyfin account, so your other devices get it too.' : 'This is saved on this device only.'}</p>
         <p class="muted invite-note">Not installed yet? It runs in Docker: see <a class="text-link" href="https://holyarrs.com" target="_blank" rel="noopener">holyarrs.com</a>.</p>
       </div>`)) return;
     $('#holyarrs-form').addEventListener('submit', e => {
@@ -1361,10 +1363,12 @@ export async function holyarrsView(seq, params = new URLSearchParams()) {
   const up = await holyarrsUp(address);
   const status = $('#holyarrs-status');
   if (stale(seq) || !status) return;
-  status.classList.add(up ? 'up' : 'down');
+  status.classList.add(up ? 'up' : up === null ? 'unknown' : 'down');
   status.innerHTML = up
     ? `<span class="dot"></span> Running at <strong>${esc(address)}</strong>`
-    : `<span class="dot"></span> Couldn't reach <strong>${esc(address)}</strong>. Is it running? The links below still work if you can open it in this browser.`;
+    : up === null
+      ? `<span class="dot"></span> Using <strong>${esc(address)}</strong>. This secure (https) page can't check on it, but the links below open it in a new tab.`
+      : `<span class="dot"></span> Couldn't reach <strong>${esc(address)}</strong>. Is it running? The links below still work if you can open it in this browser.`;
 }
 
 /* ---------- owner: who has access ---------- */
