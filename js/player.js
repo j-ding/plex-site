@@ -24,10 +24,11 @@ export const SUB_LANGUAGES = [
   ['ko', 'Korean'], ['zh', 'Chinese'], ['vi', 'Vietnamese'], ['th', 'Thai'], ['id', 'Indonesian'],
 ];
 
-// Autoplay: when the credits start, count down 10 seconds and play what's next.
+// Autoplay: when the credits start, count down and play what's next: 5 seconds to the
+// next episode, 10 to the next film in a collection.
 export const autoplayOn = () => store.get('autoplay', true) !== false;
 export const setAutoplay = on => store.set('autoplay', !!on);
-const COUNTDOWN = 10;
+const COUNTDOWN = { episode: 5, movie: 10 };
 const GUESS_CREDITS = 25; // seconds before the end, for episodes with no credits data
 
 export function defaultSubLanguage() {
@@ -658,7 +659,7 @@ function upNext(c, { credits = false } = {}) {
   const n = c.next;
   const box = $('.upnext', c.root);
   const auto = autoplayOn();
-  let left = COUNTDOWN;
+  let left = COUNTDOWN[n.type] || COUNTDOWN.movie;
   clearInterval(c.countdown);
   c.upnext = credits ? 'credits' : 'ended';
   const kind = n.type === 'episode' ? `Next episode · S${esc(n.parentIndex)}:E${esc(n.index)}` : `Next movie${n.year ? ` · ${esc(n.year)}` : ''}`;
