@@ -1056,8 +1056,10 @@ export class JellyfinServer {
     const item = await this.api(`/Items/${itemId}`, { params: { userId: this.userId } });
     const targets = [itemId];
     if (item.Type === 'Series' || item.Type === 'Season') {
-      const kids = await this.api('/Items', { params: { userId: this.userId, ParentId: itemId, Recursive: true, IncludeItemTypes: 'Season,Episode' } });
-      targets.push(...(kids.Items || []).map(k => k.Id));
+      const kids = await this.api('/Items', { params: { userId: this.userId, ParentId: itemId, Recursive: true, IncludeItemTypes: 'Season,Episode', IsMissing: false, Fields: 'LocationType' } });
+      // Episodes Jellyfin only knows of (not out yet, or not downloaded) have no file and
+      // can't be changed; trying makes Jellyfin answer with an error.
+      targets.push(...(kids.Items || []).filter(k => k.LocationType !== 'Virtual').map(k => k.Id));
     }
     for (const target of targets) await this.setTag(target, tag, on);
   }
@@ -1071,32 +1073,42 @@ export class JellyfinServer {
     const cleanNote = note.replace(/[^\w .'@+-]/g, '').trim().slice(0, 30);
     const name = `share-${id}-${expires ? expires.toString(36) : 'never'}${cleanNote ? ` ${cleanNote}` : ''}`;
     const password = Array.from(crypto.getRandomValues(new Uint8Array(18)), b => b.toString(36).padStart(2, '0')).join('').slice(0, 28);
+    // Says which part failed, so an error from Jellyfin can be traced.
+    const step = (label, work) => work.catch(err => { throw Object.assign(new Error(`${label} (${err.message})`), { status: err.status }); });
 
-    if (kind === 'book') {
-      // An audiobook: its files, and its folder when it has one of its own.
-      const book = (await this.audiobooks({ fresh: true })).find(b => b.id === itemId);
-      if (!book) throw new Error('That audiobook is no longer on the server.');
-      const targets = book.parts.map(p => p.id);
-      if (!targets.includes(book.id)) targets.push(book.id);
-      for (const target of targets) await this.setTag(target, tag, true);
-    } else {
-      await this.tagTree(itemId, tag, true);
+    let user = null;
+    try {
+      if (kind === 'book') {
+        // An audiobook: its files, and its folder when it has one of its own.
+        const book = (await this.audiobooks({ fresh: true })).find(b => b.id === itemId);
+        if (!book) throw new Error('That audiobook is no longer on the server.');
+        const targets = book.parts.map(p => p.id);
+        if (!targets.includes(book.id)) targets.push(book.id);
+        await step('Couldn’t mark the audiobook for sharing', (async () => { for (const target of targets) await this.setTag(target, tag, true); })());
+      } else {
+        await step('Couldn’t mark it for sharing', this.tagTree(itemId, tag, true));
+      }
+      user = await step('Couldn’t create the guest account', this.api('/Users/New', { method: 'POST', json: { Name: name, Password: password } }));
+      await step('Couldn’t limit the guest to this title', this.updatePolicy(user.Id, {
+        IsHidden: true,
+        IsAdministrator: false,
+        EnableAllFolders: true,
+        AllowedTags: [tag],
+        EnableContentDownloading: false,
+        EnableContentDeletion: false,
+        EnableRemoteControlOfOtherUsers: false,
+        EnableSharedDeviceControl: false,
+        EnableLiveTvAccess: false,
+        EnableLiveTvManagement: false,
+        MaxActiveSessions: 2,
+      }));
+    } catch (err) {
+      // Leave nothing half-made behind: no guest account, no stray tags.
+      if (user) await this.deleteUser(user.Id).catch(() => {});
+      const r = await this.api('/Items', { params: { userId: this.userId, Tags: tag, Recursive: true } }).catch(() => ({}));
+      for (const x of r.Items || []) await this.setTag(x.Id, tag, false).catch(() => {});
+      throw err;
     }
-
-    const user = await this.api('/Users/New', { method: 'POST', json: { Name: name, Password: password } });
-    await this.updatePolicy(user.Id, {
-      IsHidden: true,
-      IsAdministrator: false,
-      EnableAllFolders: true,
-      AllowedTags: [tag],
-      EnableContentDownloading: false,
-      EnableContentDeletion: false,
-      EnableRemoteControlOfOtherUsers: false,
-      EnableSharedDeviceControl: false,
-      EnableLiveTvAccess: false,
-      EnableLiveTvManagement: false,
-      MaxActiveSessions: 2,
-    });
     const link = { s: this.linkAddress(), u: name, p: password, i: itemId, x: expires };
     if (kind === 'book') link.k = 'book';
     return { id, userId: user.Id, link };
